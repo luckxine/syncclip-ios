@@ -98,9 +98,13 @@ bash scripts/build-app.sh      # 产出 dist/SyncClipboard_1.0.0.ipa
 
 ### 没有 Mac（推 GitHub）
 
-Actions 会自动跑三件事：纯 node 的静态校验 → 构建 `.ipa`（arm64 + arm64e 两份）→
-构建越狱 `.deb`（备着）。打 `v*` tag 会直接发 Release。
-产物在对应 workflow run 的 Artifacts 里下载。
+Actions 会自动跑：纯 node 静态校验 → 工具链冒烟测试 → 构建 `.ipa`（arm64 + arm64e）
+→ 构建越狱 `.deb`（备着）→ 如果是 tag 就发 Release。
+
+当前状态：**全绿**。三个 job 的分工是刻意的——
+`selftest`（几秒）抳代码结构问题，`toolchain`（十几秒）抳环境问题
+（SwiftPM 能不能交叉编译到 iOS、ldid 能不能写 entitlement 并读回），
+两个都绿了才开始真正构建 App。这样“环境不对”和“代码写错”不会混成一个含糊的失败。
 
 ### 本机（Windows/Linux，没有 Swift 工具链）能跑的部分
 
@@ -118,8 +122,15 @@ SDF 三角形符号写反、zip 的 external attributes 32 位溢出。
 
 ## 四、安装与配置
 
-1. 把 `SyncClipboard_1.0.0.ipa` 传到 iPhone，用 **TrollStore** 打开安装。
-2. 打开 App → **诊断** 页 → 点右上角「重新诊断」。
+### 直接下载
+
+最新 ipa 在 Releases 里：**https://github.com/luckxine/syncclip-ios/releases/latest**
+
+- `SyncClipboard_1.0.0_arm64.ipa` —— 用这个（arm64 在 arm64e 机型上也能跑）
+- `SyncClipboard_1.0.0_arm64e.ipa` —— 备用
+
+1. 把 ipa 传到 iPhone（AirDrop / 自建网盘 / iCloud 都行），**用 TrollStore 打开安装**。
+2. 打开 App → **诊断** 页 → 右上角 … → 「重新诊断」。
    确认第一行是绿色的「剪贴板权限就位」。这是整个方案的地基，**先确认这一步再往下走**。
 3. 去 **设置** 页填服务器：
    - 地址：`http://192.168.1.10:5033`（要带 http:// 前缀，端口别漏）
@@ -129,6 +140,10 @@ SDF 三角形符号写反、zip 的 external attributes 32 位溢出。
 4. 回 **同步** 页，点「立即同步」看有没有正常拉/推。
 
 配置文件在 App 容器的 `Documents/syncclip-config.json`，可以用 Filza 直接改。
+
+### 自己构建
+
+见下面第三节。
 
 ### 三个页面
 
