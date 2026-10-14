@@ -2,5 +2,6 @@
 dist/
 .deb-stage/
 .deb-tmp/
+.selftest/
 *.o
 .DS_Store

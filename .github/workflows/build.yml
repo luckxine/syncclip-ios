@@ -120,6 +120,39 @@ jobs:
           retention-days: 30
 
   # ---------------------------------------------------------------------------
+  # NE 探针 → .ipa（TrollStore 装。见 docs/probe.md）
+  #
+  # 这个包不是为了用，是为了回答一个没法从任何公开资料里查到的问题：
+  # 非越狱设备上，伪造签名带进来的 networkextension entitlement 到运行时
+  # 还算不算数；以及隧道进程能不能读写剪贴板。
+  # 所以它进 CI 而不是只在本地生成 —— 探针包必须和主包用同一套构建/签名链路，
+  # 否则验出来的就不是「我们的 App 能不能用 NE」，而是别人的实现了。
+  # ---------------------------------------------------------------------------
+  probe:
+    needs: toolchain
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, arm64e]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 准备 ldid（带功能冒烟测试）
+        run: bash scripts/setup-ldid.sh
+
+      # build-probe.sh 内部会验 appex 入口点、复核两组 entitlement、并按 probe 档验包
+      - name: 构建探针 + 签名 + 打 ipa + 验包（${{ matrix.arch }}）
+        run: bash scripts/build-probe.sh --arch ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipa-probe-${{ matrix.arch }}
+          path: dist/*.ipa
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
   # 越狱守护进程 → .deb（当前用不上，保留；将来若越狱可直接用）
   # ---------------------------------------------------------------------------
   daemon:
@@ -147,7 +180,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   release:
-    needs: [app, daemon]
+    needs: [app, probe, daemon]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

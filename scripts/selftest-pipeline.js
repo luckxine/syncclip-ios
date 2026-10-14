@@ -31,47 +31,128 @@ function runSync(cmd, args, opts) {
 // ===========================================================================
 
 const LC_CODE_SIGNATURE = 0x1d;
+const LC_SEGMENT_64 = 0x19;
+const LC_SYMTAB = 0x2;
+const LC_MAIN = 0x80000028;
 const SUPERBLOB_MAGIC = 0xfade0cc0;
 const ENTITLEMENTS_MAGIC = 0xfade7171;
 
-function buildMachO(entitlementsXml, cputype = 0x0100000c) {
+// 除了签名，还得造出 __TEXT 段、符号表和 LC_MAIN：verify-ipa.js 里有一条检查是
+// 「appex 的 LC_MAIN 指向的符号是不是 _NSExtensionMain」，合成二进制里没有这些结构
+// 的话，那条检查就永远只会「因为找不到符号而失败」，验不出它会不会误判。
+//
+// opts: cputype / entrySymbol（默认 _NSExtensionMain）/ withMain（false=不写 LC_MAIN）
+function buildMachO(entitlementsXml, opts = {}) {
+    const cputype = opts.cputype === undefined ? 0x0100000c : opts.cputype;
+    const withMain = opts.withMain !== false;
+    const entrySymbol = opts.entrySymbol === undefined ? '_NSExtensionMain' : opts.entrySymbol;
+    const signed = entitlementsXml !== '';
+
     const xml = Buffer.from(entitlementsXml, 'utf8');
     const entBlobLen = 8 + xml.length;
-    const count = 1;
-    const superLen = 12 + 8 * count + entBlobLen;
+    const superLen = 12 + 8 + entBlobLen;
 
-    const loadCmdSize = 16;
-    const sigOffset = 32 + loadCmdSize;
-    const out = Buffer.alloc(sigOffset + superLen);
+    const headerSize = 32;
+    const segCmdSize = 72;
+    const symtabCmdSize = 24;
+    const mainCmdSize = withMain ? 24 : 0;
+    const sigCmdSize = signed ? 16 : 0;
+    const ncmds = 3 + (withMain ? 1 : 0) + (signed ? 1 : 0);
+    const cmdsSize = segCmdSize + symtabCmdSize + mainCmdSize + sigCmdSize;
+
+    const codeOff = headerSize + cmdsSize;
+    const symOff = codeOff + 16;
+
+    const symbols = entrySymbol ? [entrySymbol] : [];
+    const strOff = symOff + symbols.length * 16;
+    let strTab = Buffer.from([0]);
+    const strIndexes = [];
+    for (const name of symbols) {
+        strIndexes.push(strTab.length);
+        strTab = Buffer.concat([strTab, Buffer.from(name + '\0', 'utf8')]);
+    }
+
+    const sigOff = strOff + strTab.length;
+    const total = signed ? sigOff + superLen : sigOff;
+    const out = Buffer.alloc(total);
+    const TEXT_VMADDR = 0x100000000n;
 
     // mach_header_64
     out.writeUInt32LE(0xfeedfacf, 0);
     out.writeUInt32LE(cputype, 4);
     out.writeUInt32LE(0, 8);
     out.writeUInt32LE(2, 12);              // MH_EXECUTE
-    out.writeUInt32LE(1, 16);              // ncmds
-    out.writeUInt32LE(loadCmdSize, 20);
+    out.writeUInt32LE(ncmds, 16);
+    out.writeUInt32LE(cmdsSize, 20);
     out.writeUInt32LE(0, 24);
     out.writeUInt32LE(0, 28);
 
+    let off = headerSize;
+
+    // LC_SEGMENT_64 __TEXT（vmaddr 0x100000000、fileoff 0，entryoff 才能换算成 vmaddr）
+    out.writeUInt32LE(LC_SEGMENT_64, off);
+    out.writeUInt32LE(segCmdSize, off + 4);
+    out.write('__TEXT\0\0\0\0\0\0\0\0\0\0', off + 8, 16, 'utf8');
+    out.writeBigUInt64LE(TEXT_VMADDR, off + 24);
+    out.writeBigUInt64LE(BigInt(total), off + 32);
+    out.writeBigUInt64LE(0n, off + 40);
+    out.writeBigUInt64LE(BigInt(total), off + 48);
+    out.writeUInt32LE(5, off + 56);
+    out.writeUInt32LE(5, off + 60);
+    out.writeUInt32LE(0, off + 64);
+    out.writeUInt32LE(0, off + 68);
+    off += segCmdSize;
+
+    // LC_SYMTAB
+    out.writeUInt32LE(LC_SYMTAB, off);
+    out.writeUInt32LE(symtabCmdSize, off + 4);
+    out.writeUInt32LE(symOff, off + 8);
+    out.writeUInt32LE(symbols.length, off + 12);
+    out.writeUInt32LE(strOff, off + 16);
+    out.writeUInt32LE(strTab.length, off + 20);
+    off += symtabCmdSize;
+
+    // LC_MAIN（entryoff 是文件偏移，不是 vmaddr）
+    if (withMain) {
+        out.writeUInt32LE(LC_MAIN, off);
+        out.writeUInt32LE(mainCmdSize, off + 4);
+        out.writeBigUInt64LE(BigInt(codeOff), off + 8);
+        out.writeBigUInt64LE(0n, off + 16);
+        off += mainCmdSize;
+    }
+
     // LC_CODE_SIGNATURE
-    out.writeUInt32LE(LC_CODE_SIGNATURE, 32);
-    out.writeUInt32LE(16, 36);
-    out.writeUInt32LE(sigOffset, 40);
-    out.writeUInt32LE(superLen, 44);
+    if (signed) {
+        out.writeUInt32LE(LC_CODE_SIGNATURE, off);
+        out.writeUInt32LE(sigCmdSize, off + 4);
+        out.writeUInt32LE(sigOff, off + 8);
+        out.writeUInt32LE(superLen, off + 12);
+    }
+
+    // 符号表：入口符号的地址就是 __TEXT.vmaddr + codeOff
+    symbols.forEach((name, i) => {
+        const o = symOff + i * 16;
+        out.writeUInt32LE(strIndexes[i], o);
+        out.writeUInt8(0x0f, o + 4);                     // N_SECT | N_EXT
+        out.writeUInt8(1, o + 5);                        // n_sect
+        out.writeUInt16LE(0, o + 6);
+        out.writeBigUInt64LE(TEXT_VMADDR + BigInt(codeOff), o + 8);
+    });
+    strTab.copy(out, strOff);
 
     // SuperBlob（代码签名里的结构一律大端）
-    out.writeUInt32BE(SUPERBLOB_MAGIC, sigOffset);
-    out.writeUInt32BE(superLen, sigOffset + 4);
-    out.writeUInt32BE(count, sigOffset + 8);
-    out.writeUInt32BE(5, sigOffset + 12);            // CSSLOT_ENTITLEMENTS
-    out.writeUInt32BE(12 + 8 * count, sigOffset + 16);
+    if (signed) {
+        out.writeUInt32BE(SUPERBLOB_MAGIC, sigOff);
+        out.writeUInt32BE(superLen, sigOff + 4);
+        out.writeUInt32BE(1, sigOff + 8);
+        out.writeUInt32BE(5, sigOff + 12);               // CSSLOT_ENTITLEMENTS
+        out.writeUInt32BE(20, sigOff + 16);
 
-    // entitlements blob
-    const b = sigOffset + 12 + 8 * count;
-    out.writeUInt32BE(ENTITLEMENTS_MAGIC, b);
-    out.writeUInt32BE(entBlobLen, b + 4);
-    xml.copy(out, b + 8);
+        const b = sigOff + 20;
+        out.writeUInt32BE(ENTITLEMENTS_MAGIC, b);
+        out.writeUInt32BE(entBlobLen, b + 4);
+        xml.copy(out, b + 8);
+    }
 
     return out;
 }
@@ -155,7 +236,7 @@ function buildApp(dir, opts = {}) {
     fs.mkdirSync(dir, { recursive: true });
 
     const execName = 'SyncClipboard';
-    const bin = buildMachO(o.entitlementsXml);
+    const bin = buildMachO(o.entitlementsXml, o.macho || {});
     fs.writeFileSync(path.join(dir, execName), bin);
     fs.chmodSync(path.join(dir, execName), o.execMode);
 
@@ -175,6 +256,124 @@ function buildApp(dir, opts = {}) {
 }
 
 // ===========================================================================
+// 探针档：宿主 App + PlugIns 里的 appex
+// ===========================================================================
+
+function probeEntitlementsXml(suffix, extra = '') {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+\t<key>application-identifier</key><string>TROLLTROLL.com.cxk.pasteprobe${suffix}</string>
+\t<key>com.apple.developer.team-identifier</key><string>TROLLTROLL</string>
+\t<key>com.apple.developer.networking.networkextension</key>
+\t<array><string>packet-tunnel-provider</string></array>
+\t<key>com.apple.security.application-groups</key>
+\t<array><string>group.com.cxk.pasteprobe</string></array>
+\t<key>com.apple.private.webkit.pasteboard</key><true/>
+\t<key>com.apple.private.pasteboard.check-pasteboard</key><true/>
+\t<key>com.apple.Pasteboard.background-access</key><true/>
+\t<key>com.apple.Pasteboard.paste-unchecked</key><true/>
+${extra}</dict>
+</plist>
+`;
+}
+
+const PROBE_APP_ENT = probeEntitlementsXml('');
+const PROBE_APPEX_ENT = probeEntitlementsXml('.tunnel');
+
+function buildProbeAppPlist(backgroundModes) {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+\t<key>CFBundleIdentifier</key><string>com.cxk.pasteprobe</string>
+\t<key>CFBundleExecutable</key><string>PasteProbe</string>
+\t<key>CFBundleName</key><string>PasteProbe</string>
+\t<key>CFBundleShortVersionString</key><string>1.0.0</string>
+\t<key>CFBundleVersion</key><string>1</string>
+\t<key>CFBundlePackageType</key><string>APPL</string>
+\t<key>MinimumOSVersion</key><string>15.0</string>
+${backgroundModes.length ? `\t<key>UIBackgroundModes</key>\n\t<array>\n${backgroundModes.map((m) => `\t\t<string>${m}</string>`).join('\n')}\n\t</array>\n` : ''}\t<key>CFBundleIcons</key>
+\t<dict>
+\t\t<key>CFBundlePrimaryIcon</key>
+\t\t<dict>
+\t\t\t<key>CFBundleIconFiles</key>
+\t\t\t<array><string>AppIcon60x60</string></array>
+\t\t</dict>
+\t</dict>
+</dict>
+</plist>
+`;
+}
+
+function buildAppexPlist(overrides = {}) {
+    const o = {
+        bundleId: 'com.cxk.pasteprobe.tunnel',
+        executable: 'PasteProbeTunnel',
+        packageType: 'XPC!',
+        extensionPoint: 'com.apple.networkextension.packet-tunnel',
+        principalClass: 'PasteProbeTunnel.ProbeTunnelProvider',
+        minOS: '15.0',
+        ...overrides,
+    };
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+\t<key>CFBundleIdentifier</key><string>${o.bundleId}</string>
+\t<key>CFBundleExecutable</key><string>${o.executable}</string>
+\t<key>CFBundlePackageType</key><string>${o.packageType}</string>
+\t<key>CFBundleShortVersionString</key><string>1.0.0</string>
+\t<key>CFBundleVersion</key><string>1</string>
+\t<key>MinimumOSVersion</key><string>${o.minOS}</string>
+\t<key>NSExtension</key>
+\t<dict>
+\t\t<key>NSExtensionPointIdentifier</key><string>${o.extensionPoint}</string>
+\t\t<key>NSExtensionPrincipalClass</key><string>${o.principalClass}</string>
+\t</dict>
+</dict>
+</plist>
+`;
+}
+
+function buildProbeApp(dir, opts = {}) {
+    const o = {
+        appEntitlementsXml: PROBE_APP_ENT,
+        appexEntitlementsXml: PROBE_APPEX_ENT,
+        appMacho: {},
+        appexMacho: {},
+        appexInfoOverrides: {},
+        backgroundModes: [],
+        omitAppex: false,
+        appexExecMode: 0o755,
+        ...opts,
+    };
+
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+
+    fs.writeFileSync(path.join(dir, 'PasteProbe'), buildMachO(o.appEntitlementsXml, o.appMacho));
+    fs.chmodSync(path.join(dir, 'PasteProbe'), 0o755);
+    fs.writeFileSync(path.join(dir, 'Info.plist'), buildProbeAppPlist(o.backgroundModes));
+
+    const tmp = path.join(WORK, 'icons');
+    runSync('node', [path.join(__dirname, 'make-icons.js'), tmp], { cwd: ROOT, stdio: 'pipe' });
+    fs.copyFileSync(path.join(tmp, 'AppIcon60x60@2x.png'), path.join(dir, 'AppIcon60x60@2x.png'));
+    fs.copyFileSync(path.join(tmp, 'AppIcon60x60@3x.png'), path.join(dir, 'AppIcon60x60@3x.png'));
+
+    if (o.omitAppex) return dir;
+
+    const appexDir = path.join(dir, 'PlugIns/PasteProbeTunnel.appex');
+    fs.mkdirSync(appexDir, { recursive: true });
+    const bin = path.join(appexDir, 'PasteProbeTunnel');
+    fs.writeFileSync(bin, buildMachO(o.appexEntitlementsXml, o.appexMacho));
+    fs.chmodSync(bin, o.appexExecMode);
+    fs.writeFileSync(path.join(appexDir, 'Info.plist'), buildAppexPlist(o.appexInfoOverrides));
+    return dir;
+}
+
+// ===========================================================================
 // 跑流水线
 // ===========================================================================
 
@@ -184,11 +383,44 @@ function run(script, args) {
     return { ok: r.status === 0, out: (r.stdout || '') + (r.stderr || '') };
 }
 
-function pipeline(appDir, ipaPath) {
-    const pack = run('make-ipa.js', ['SyncClipboard', appDir, ipaPath]);
+function pipeline(appDir, ipaPath, profile = 'app', appName = 'SyncClipboard') {
+    const pack = run('make-ipa.js', [appName, appDir, ipaPath]);
     if (!pack.ok) return { ok: false, stage: 'make-ipa', out: pack.out };
-    const verify = run('verify-ipa.js', [ipaPath]);
+    const verify = run('verify-ipa.js', [ipaPath, '--profile', profile]);
     return { ok: verify.ok, stage: 'verify-ipa', out: verify.out };
+}
+
+function probePipeline(opts) {
+    const appDir = buildProbeApp(path.join(WORK, 'probe.app'), opts);
+    const ipa = path.join(WORK, 'probe.ipa');
+    return Object.assign(pipeline(appDir, ipa, 'probe', 'PasteProbe'), { appDir, ipa });
+}
+
+function expectProbePass(label, opts) {
+    const r = probePipeline(opts);
+    if (r.ok) {
+        console.log(`  ✅ ${label}：如预期通过`);
+    } else {
+        failures++;
+        console.log(`  ❌ ${label}：本该通过却失败了（stage=${r.stage}）`);
+        console.log(r.out.split('\n').filter((l) => l.includes('❌')).map((l) => '       ' + l.trim()).join('\n'));
+    }
+}
+
+function expectProbeFail(label, opts, expectMention) {
+    const r = probePipeline(opts);
+    if (!r.ok) {
+        if (!expectMention || r.out.includes(expectMention)) {
+            console.log(`  ✅ ${label}：被正确拦下`);
+        } else {
+            failures++;
+            console.log(`  ❌ ${label}：确实失败了，但不是因为预期的那一项（想看到 "${expectMention}"）`);
+            console.log(r.out.split('\n').filter((l) => l.includes('❌')).map((l) => '       ' + l.trim()).join('\n'));
+        }
+    } else {
+        failures++;
+        console.log(`  ❌ ${label}：本该失败却通过了 —— 校验器太宽松，等于没验`);
+    }
 }
 
 // ===========================================================================
@@ -400,7 +632,48 @@ expectFail('URL scheme 缺失',
     { infoOverrides: { urlScheme: '' } },
     'URL scheme');
 
-fs.rmSync(WORK, { recursive: true, force: true });
+console.log('\n探针档（NE 探针：宿主 App + PlugIns 里的 appex）');
+
+expectProbePass('完整的探针包（含 appex 入口点检查）', {});
+
+// 打包器必须接照每个 Info.plist 里的 CFBundleExecutable 给可执行位。
+// 只看顶层 Info.plist 的话 appex 二进制会拿到 0644，装上去 PluginKit 起不来。
+expectProbePass('appex 源文件权限 0644 → 打包器归一化为 0755', { appexExecMode: 0o644 });
+
+// 入口点没接上（链接器的 -e 没生效）—— appex 会「静默什么都不做」
+expectProbeFail('appex 入口点不是 _NSExtensionMain',
+    { appexMacho: { entrySymbol: '_main' } }, '实际：_main');
+
+// appex 缺网络扩展 entitlement —— 隧道建不起来
+expectProbeFail('appex 缺 networkextension entitlement',
+    { appexEntitlementsXml: PROBE_APPEX_ENT.replace(
+        /<key>com\.apple\.developer\.networking\.networkextension<\/key>\s*<array><string>packet-tunnel-provider<\/string><\/array>/, '') },
+    'appex entitlement: com.apple.developer.networking.networkextension');
+
+// appex 的 NSExtension 段写错 —— NSExtensionMain 找不到主类
+expectProbeFail('appex 的 NSExtensionPointIdentifier 写错',
+    { appexInfoOverrides: { extensionPoint: 'com.apple.networkextension.dns-proxy' } },
+    'NSExtensionPointIdentifier');
+expectProbeFail('appex 的 NSExtensionPrincipalClass 写错',
+    { appexInfoOverrides: { principalClass: 'Wrong.Module.Class' } },
+    'NSExtensionPrincipalClass');
+expectProbeFail('appex 的 CFBundlePackageType 不是 XPC!',
+    { appexInfoOverrides: { packageType: 'APPL' } }, 'CFBundlePackageType');
+
+// appex 压根没打进包里
+expectProbeFail('appex 目录整个缺失', { omitAppex: true }, 'appex 目录存在');
+
+// 探针 App 不能有任何后台模式（否则「隧道独立于 App 存活」的结论会被污染）
+expectProbeFail('探针 App 混进了 UIBackgroundModes',
+    { backgroundModes: ['audio'] }, 'UIBackgroundModes');
+
+// 宿主 App 与 appex 共享容器靠的就是这一条
+expectProbeFail('宿主 App 缺 application-groups',
+    { appEntitlementsXml: PROBE_APP_ENT.replace(
+        /<key>com\.apple\.security\.application-groups<\/key>\s*<array><string>group\.com\.cxk\.pasteprobe<\/string><\/array>/, '') },
+    'entitlement: com.apple.security.application-groups');
+
+if (!process.env.SELFTEST_KEEP) fs.rmSync(WORK, { recursive: true, force: true });
 
 console.log('');
 if (failures > 0) {

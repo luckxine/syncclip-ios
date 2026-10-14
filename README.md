@@ -53,11 +53,26 @@ com.apple.Pasteboard.paste-unchecked
 所以不越狱也能拿到这一组。它只对 3 个在 iOS 15/A12+ 被禁的 entitlement 报错
 （`cs.debugger`、`dynamic-codesigning`、`skip-library-validation`），这批不在其中。
 
-**2. 常驻只能靠「后台音频」。**
-TrollStore 明确做不到 spawn launch daemon（那需要 `CS_PLATFORMIZED`），也不能往系统进程注入 tweak。
-所以没有「重启也在」的守护进程可选，只能：声明 `UIBackgroundModes=audio`
-+ 持续播放一段**听不见但非全零**的音频，让进程不被系统挂起。
-（用纯数字静音会被部分系统版本判定成没在播放而照样挂起，所以波形取 16bit 的最低有效位。）
+**2. 常驻：音频只是当前实现，不是唯一选项 —— NE 探针已经在做。**
+TrollStore 明确做不到 spawn launch daemon（那需要 `CS_PLATFORMIZED`）、不能往系统进程注入 tweak，
+`posix_spawn` 出来的子进程还会跟着 App 一起被回收。但有一条例外：
+
+> **Network Extension（VPN 隧道 appex）由 `nesessionmanager` 托管，不受 App 挂起管辖，
+> App 被杀也不退出，还能开机自启。**
+
+也就是说，非越狱设备上它已经是「守护进程」能做到的全部。它靠 `com.apple.developer.networking.networkextension`
+授权 —— 免费证书拿不到（Apple capability 表里免费列为空），但 **TrollStore 伪造签名可以**
+（TrollStore README 的「arbitrary entitlements」+「Signs all MachO files」；实证见 EasyTier 官方
+credential-free 的 TrollStore nightly IPA、CB Pro Proxy 文档）。
+
+两条还没人验过、而决定整个架构的东西，所以先做了 `Sources/PasteProbe*` 这个探针去问：
+**伪造签名的 NE entitlement 到运行时还算不算数？隧道进程能不能读写剪贴板？**
+结果决定最终形态 —— 见 [`docs/probe.md`](docs/probe.md)。
+
+当前的保活实现是音频（`UIBackgroundModes=audio` + 一段听不见但非全零的音频）。
+它的真实上限与全部备选写在 [`docs/keepalive.md`](docs/keepalive.md)：
+**音频会被系统大约 3 小时后静默节流**（“quietly throttles the process until the audio queue starves”），
+所以它只是 Tier 1，不是地基。
 
 **3. 变更检测靠轮询 + 通知双保险。**
 不能 hook SpringBoard，拿不到即时事件，所以以 `UIPasteboard.changeCount` 轮询为主
@@ -120,8 +135,16 @@ Config/
 Sources/syncclipd/           越狱守护进程（当前用不上，保留）
 layout/                      守护进程的 LaunchAgent plist + entitlements
 
+Sources/PasteProbeShared/    NE 探针：宿主 App 与隧道进程共用（常量 + 跨进程日志）
+Sources/PasteProbe/          NE 探针：宿主 App（流程控制 + 日志界面）
+Sources/PasteProbeTunnel/    NE 探针：NEPacketTunnelProvider（什么都不转发，只验机制）
+Config/PasteProbe*.plist     探针的两份 Info.plist（appex 那份带 NSExtension 段）
+Config/PasteProbe*.entitlements  探针的两组 entitlement（networkextension + app group + 剪贴板）
+docs/probe.md                探针的使用说明与结果解读
+
 scripts/
   build-app.sh               构建 + ldid 签名 + 打 ipa + 验包
+  build-probe.sh             同上，但产出 NE 探针包（含 appex 入口点与双重 entitlement 校验）
   build.sh                   同上，但产出越狱用的 .deb
   lint-swift.js              源码体检（无 Swift 工具链的机器也能跑）
   make-icons.js              生成 PNG 图标（自带 PNG 编码器 + ASCII 预览）
@@ -145,7 +168,7 @@ bash scripts/build-app.sh      # 产出 dist/SyncClipboard_1.0.0.ipa
 ### 没有 Mac（推 GitHub）
 
 Actions 会自动跑：纯 node 静态校验 → 工具链冒烟测试 → 构建 `.ipa`（arm64 + arm64e）
-→ 构建越狱 `.deb`（备着）→ 如果是 tag 就发 Release。
+→ 构建 NE 探针 `.ipa`（arm64 + arm64e）→ 构建越狱 `.deb`（备着）→ 如果是 tag 就发 Release。
 
 当前状态：**全绿**。三个 job 的分工是刻意的——
 `selftest`（几秒）抳代码结构问题，`toolchain`（十几秒）抳环境问题
@@ -219,7 +242,7 @@ syncclip://pull    把远端内容拉到剪贴板
 
 | 限制 | 说明 | 后备方案 |
 |---|---|---|
-| 后台保活靠音频会话 | 费电；App 被系统强杀后要重新打开一次才会继续 | 轻点背面触发 URL scheme |
+| 后台保活靠音频会话 | **会被系统大约 3 小时后静默节流**；App 被强杀后要重新打开一次才会继续。全部备选手段见 [`docs/keepalive.md`](docs/keepalive.md)，正在验的 NE 路线见 [`docs/probe.md`](docs/probe.md) | 轻点背面触发 URL scheme；或等 NE 探针结论 |
 | 只同步文本 | `Image`/`File`/`Group` 类型会**安全跳过**（不会用空内容覆盖剪贴板） | 后续版本 |
 | 轮询不是瞬时 | 默认 2 秒延迟 | 改小 `pollInterval` |
 | 网络断开期间不推送 | 断开时不写状态，恢复后本地改动仍会推上去（不会静默丢） | — |

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleDisplayName</key>
+	<string>PasteProbe 隧道</string>
+	<key>CFBundleExecutable</key>
+	<string>PasteProbeTunnel</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.cxk.pasteprobe.tunnel</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>PasteProbeTunnel</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>iPhoneOS</string>
+	</array>
+	<key>MinimumOSVersion</key>
+	<string>15.0</string>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+	</array>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+
+	<!--
+	  这一段的写法来自两个真实项目：
+	    - StosVPN（SideStore 的 loopback VPN）的 TunnelProv/Info.plist 只有这个 dict；
+	    - EasyTier 的 EasyTierNetworkExtension.appex 里 NSExtensionPrincipalClass
+	      是 "EasyTierNetworkExtension.PacketTunnelProvider"，即「模块名.类名」。
+	  NSExtensionMain 会照这个字符串去 NSClassFromString，所以模块名必须
+	  和 SwiftPM 给我们的 target 名一致（PasteProbeTunnel）。
+	-->
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.networkextension.packet-tunnel</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>PasteProbeTunnel.ProbeTunnelProvider</string>
+	</dict>
+</dict>
+</plist>

@@ -68,17 +68,24 @@ if (files.length === 0) {
 }
 
 // ---- 需要保留可执行位的文件 ----
-// Info.plist 里 CFBundleExecutable 指的那个必须可执行，否则装上去点不开
-let execName = appName;
-try {
-    const plist = fs.readFileSync(path.join(appDir, 'Info.plist'), 'utf8');
-    const m = plist.match(/<key>CFBundleExecutable<\/key>\s*<string>([^<]+)<\/string>/);
-    if (m) execName = m[1];
-} catch { /* 没有 Info.plist 的话下面会被校验拦下 */ }
+// 名单从**所有** Info.plist 里的 CFBundleExecutable 收集，而不是只看顶层那一个。
+// 一个包里还可能有 appex（PlugIns/*.appex），它有自己的 CFBundleExecutable；
+// 漏掉的话 appex 二进制会拿到 0644，装到设备上 PluginKit 根本起不来，
+// 而且失败现象很含糊（和 entitlement 没生效长得一样）。
+const execNames = new Set();
+for (const f of files) {
+    if (path.basename(f.rel) !== 'Info.plist') continue;
+    try {
+        const plist = fs.readFileSync(f.full, 'utf8');
+        const m = plist.match(/<key>CFBundleExecutable<\/key>\s*<string>([^<]+)<\/string>/);
+        if (m) execNames.add(m[1]);
+    } catch { /* 读不了的话下面会被校验拦下 */ }
+}
+if (execNames.size === 0) execNames.add(appName);
 
 const entries = files.map((f) => {
     const data = fs.readFileSync(f.full);
-    const isExec = path.basename(f.rel) === execName;
+    const isExec = execNames.has(path.basename(f.rel));
     return {
         name: `Payload/${appName}.app/${f.rel}`,
         data,
@@ -156,7 +163,7 @@ end.writeUInt16LE(0, 20);                     // comment len
 fs.mkdirSync(path.dirname(outFile), { recursive: true });
 fs.writeFileSync(outFile, Buffer.concat([localBuf, centralBuf, end]));
 
-const execEntry = entries.find((e) => e.mode === 0o100755);
+const execEntries = entries.filter((e) => e.mode === 0o100755);
 console.log(`已生成：${outFile}`);
-console.log(`  入口可执行文件：${execEntry ? execEntry.name : '（没找到，见校验）'}`);
+console.log(`  可执行（0755）：${execEntries.map((e) => e.name).join(', ') || '（没找到，见校验）'}`);
 console.log(`  文件数：${entries.length}  体积：${(fs.statSync(outFile).size / 1024).toFixed(1)} KB`);

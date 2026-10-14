@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  探针宿主 App 的 entitlement。
+	  与真实 App 的差别只有三行：网络扩展、App Group、以及 application-identifier。
+
+	  application-identifier / team-identifier 用 TROLLTROLL 是有意的：
+	  TrollStore 在主二进制完全没有 entitlement 时会自己补一套
+	  application-identifier = TROLLTROLL.* 的回退值（见 RootHelper/main.m）。
+	  跟着它用同一套，就不会出现「group 容器路径与签名里的 identity 对不上」
+	  这种自找的麻烦。
+	-->
+	<key>application-identifier</key>
+	<string>TROLLTROLL.com.cxk.pasteprobe</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>TROLLTROLL</string>
+
+	<!-- 网络扩展（packet tunnel provider）。这一条就是免费证书拿不到、
+	     TrollStore 伪造签名才可能拿到的那一条。 -->
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>packet-tunnel-provider</string>
+	</array>
+
+	<!-- appex 与宿主 App 共享配置和日志的容器 -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.cxk.pasteprobe</string>
+	</array>
+
+	<!-- 宿主 App 侧读剪贴板，作为对照（隧道侧能不能读是另一个问题） -->
+	<key>com.apple.private.webkit.pasteboard</key>
+	<true/>
+	<key>com.apple.private.pasteboard.check-pasteboard</key>
+	<true/>
+	<key>com.apple.Pasteboard.background-access</key>
+	<true/>
+	<key>com.apple.Pasteboard.paste-unchecked</key>
+	<true/>
+</dict>
+</plist>

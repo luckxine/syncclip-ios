@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>application-identifier</key>
+	<string>TROLLTROLL.com.cxk.pasteprobe.tunnel</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>TROLLTROLL</string>
+
+	<!-- 与宿主 App 同样的网络扩展 entitlement：两边都要有 -->
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>packet-tunnel-provider</string>
+	</array>
+
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.cxk.pasteprobe</string>
+	</array>
+
+	<!--
+	  探针的核心问题：隧道进程（一个 appex，不是 App）能不能读写 UIPasteboard。
+	  公开资料里没有任何先例 —— EasyTier / StosVPN 的隧道进程只用网络框架，
+	  连 UIKit 都没链。所以只能自己试，并且把失败原因原样记下来。
+	-->
+	<key>com.apple.private.webkit.pasteboard</key>
+	<true/>
+	<key>com.apple.private.pasteboard.check-pasteboard</key>
+	<true/>
+	<key>com.apple.Pasteboard.background-access</key>
+	<true/>
+	<key>com.apple.Pasteboard.paste-unchecked</key>
+	<true/>
+</dict>
+</plist>
