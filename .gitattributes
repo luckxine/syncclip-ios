@@ -1,0 +1,26 @@
+# 一律以 LF 存进仓库。
+#
+# 这一条不是洁癖：开发机是 Windows，如果脚本被 checkout 成 CRLF，
+# macOS/Linux 上跑 `#!/bin/bash` 会直接报 "bad interpreter: /bin/bash^M"，
+# GitHub Actions 里就是这么挂的。所以显式钉死。
+* text=auto eol=lf
+
+# 二进制，别做任何转换
+*.png binary
+*.ipa binary
+*.deb binary
+*.wav binary
+
+# 这些必须是 LF，明确写出来更保险
+*.sh   text eol=lf
+*.js   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.swift text eol=lf
+*.plist text eol=lf
+*.entitlements text eol=lf
+*.md   text eol=lf
+
+# git 用 LF 比对，且这两个文件不要出现在 GitHub 语言统计里
+*.pbxproj -text
+Resources/*.png -diff

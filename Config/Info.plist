@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 基础身份 -->
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleExecutable</key>
+	<string>SyncClipboard</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.cxk.syncclip</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>SyncClipboard</string>
+	<key>CFBundleDisplayName</key>
+	<string>剪贴板同步</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>iPhoneOS</string>
+	</array>
+	<key>MinimumOSVersion</key>
+	<string>15.0</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+	</array>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+
+	<!-- 界面 -->
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UIUserInterfaceStyle</key>
+	<string>Automatic</string>
+
+	<!--
+	  后台保活的关键：没有越狱就注册不了 launchd 守护进程，
+	  只能声明 audio 后台模式 + 持续播放一段听不见的音频，
+	  否则 App 退到后台约 30 秒后就被挂起、轮询停摆。
+	-->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+
+	<!--
+	  URL scheme：iOS 15 没有 App Intents，快捷指令里只能靠「打开 URL」。
+	  配合「设置 → 辅助功能 → 触控 → 轻点背面」可以做到不打开 App 就同步：
+	    syncclip://sync   立即同步
+	    syncclip://push   把当前剪贴板推到服务器
+	    syncclip://pull   把远端内容拉到剪贴板
+	-->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.cxk.syncclip</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>syncclip</string>
+			</array>
+		</dict>
+	</array>
+
+	<!-- 图标：不用 Assets.xcassets（那需要 actool），直接放 PNG 文件 -->
+	<key>CFBundleIcons</key>
+	<dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>AppIcon60x60</string>
+			</array>
+		</dict>
+	</dict>
+</dict>
+</plist>

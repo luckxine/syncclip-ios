@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>name</key>
+	<string>SyncClipboard iOS Daemon</string>
+	<key>identifier</key>
+	<string>com.cxk.syncclip</string>
+	<key>version</key>
+	<string>0.1.0</string>
+	<key>description</key>
+	<string>SyncClipboard 后台剪贴板同步守护进程（iOS 15+ / 越狱 LaunchAgent）</string>
+</dict>
+</plist>

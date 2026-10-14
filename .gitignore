@@ -1,0 +1,6 @@
+.build/
+dist/
+.deb-stage/
+.deb-tmp/
+*.o
+.DS_Store

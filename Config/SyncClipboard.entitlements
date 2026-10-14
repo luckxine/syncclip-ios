@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  TrollStore App 的最小 entitlement 集：只要这四条剪贴板相关的。
+	  TrollStore 会把 IPA 里的 entitlement 原样保留并被系统承认，所以这四条
+	  就是「读写剪贴板不弹提示、后台也能读」的全部开关。
+
+	  刻意**不**加的东西，以及为什么：
+	    - com.apple.private.security.no-sandbox / platform-application：
+      本项目只做 HTTP + 剪贴板，沙盒完全够用。platform-application 会让
+      部分沙盒反而变紧（TrollStore 文档原文），属于没收益的风险。
+	    - com.apple.private.skip-library-validation：iOS 15/A12+ 上被禁，
+      一签就崩。
+	  只有真机上发现读剪贴板仍然弹提示时，才按 docs/verification.md 的
+	  「逐条删变量」流程往上加，别一次堆一堆。
+	-->
+	<key>com.apple.private.webkit.pasteboard</key>
+	<true/>
+	<key>com.apple.private.pasteboard.check-pasteboard</key>
+	<true/>
+	<key>com.apple.Pasteboard.background-access</key>
+	<true/>
+	<key>com.apple.Pasteboard.paste-unchecked</key>
+	<true/>
+</dict>
+</plist>

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.cxk.syncclipd</string>
+
+	<!-- 必须是 LaunchAgent（用户域），不能是 LaunchDaemon：
+	     pasteboardd 是每用户的 launchd 服务，系统域的 root 进程连不上它。 -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/var/jb/usr/bin/syncclipd</string>
+		<string>run</string>
+	</array>
+
+	<!-- 常驻：RunAtLoad 开机/加载即起；KeepAlive 只在异常退出时重拉 -->
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+
+	<!-- 剪贴板同步是低优先级后台活，别跟用户抢 CPU -->
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>LowPriorityIO</key>
+	<true/>
+	<key>Nice</key>
+	<integer>5</integer>
+
+	<!-- 网络没起来时别急着报错退出 -->
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+
+	<key>StandardOutPath</key>
+	<string>/var/mobile/Library/Logs/syncclipd.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/mobile/Library/Logs/syncclipd.log</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/var/mobile</string>
+	</dict>
+</dict>
+</plist>
