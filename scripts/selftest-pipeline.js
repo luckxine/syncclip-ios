@@ -466,17 +466,40 @@ function checkShellScripts() {
         // 本地看几遍都看不出来。所以在这里抓。
         const lines = content.toString('utf8').split('\n');
         for (let i = 0; i < lines.length; i++) {
+            const trimmed = lines[i].trimStart();
+            // 注释行不会被执行，别误报
+            if (trimmed.startsWith('#')) continue;
             const m = lines[i].match(/\$[A-Za-z_][A-Za-z0-9_]*[\u0080-\uffff]/);
             if (m) {
                 const name = m[0].slice(1, -1);
                 console.log(`  ❌ ${f}:${i + 1}：变量 ${name} 后面紧跟非 ASCII 字符`);
-                console.log(`       写成美元符加大括号：\${${name}}`);
+                console.log(`       bash 会把那个字节当成变量名的一部分，写成美元符加大括号：\${${name}}`);
                 bad++;
             }
         }
     }
 
-    if (bad === 0) console.log(`  ✅ ${tracked.length} 个脚本：换行符与 shebang 都正常`);
+    // 检查器自身的正例：确保它真能拓到这类问题，而不是因为正则写错而“永远干净”。
+    // （同一个道理：验包器要拿反例自测，这里也一样。）
+    const detector = /\$[A-Za-z_][A-Za-z0-9_]*[\u0080-\uffff]/;
+    const selfTest = [
+        ['    echo "缺 $key。"', true, '该拓但没拓到'],
+        ['    echo "缺 ${key}。"', false, '不该拓却拓了'],
+        ['# 说明：$key，仅注释', false, '注释行不该拓（上面已跳过，这里验一下正则本身够不够宽）'],
+    ];
+    let selfBad = 0;
+    for (const [line, shouldMatch, why] of selfTest) {
+        // 第三行靠外层跳过注释来过滤，这里只验前两行
+        if (why.startsWith('注释')) continue;
+        if (!!line.match(detector) !== shouldMatch) {
+            console.log(`  ❌ 检测器自测失败：${why}  —— ${line}`);
+            selfBad++;
+        }
+    }
+    if (selfBad === 0) console.log('  ✅ 检测器自测：能拓到 $VAR＋中文标点，且不拓 ${VAR}');
+    bad += selfBad;
+
+    if (bad === 0) console.log(`  ✅ ${tracked.length} 个脚本：换行符、shebang、变量展开都正常`);
     return bad;
 }
 

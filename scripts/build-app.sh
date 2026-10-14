@@ -114,7 +114,7 @@ if [ "$SIGN" = "1" ]; then
                com.apple.private.pasteboard.check-pasteboard \
                com.apple.Pasteboard.paste-unchecked; do
         if ! echo "$ENT" | grep -q "$key"; then
-            echo "!! 致命：entitlement 里缺 $key。装上去读剪贴板会弹提示或被拒。" >&2
+            echo "!! 致命：entitlement 里缺 ${key}。装上去读剪贴板会弹提示或被拒。" >&2
             exit 1
         fi
     done

@@ -28,7 +28,7 @@ done
 case "$ARCH" in
     arm64e) TRIPLE="arm64e-apple-ios15.0"; DEB_ARCH="iphoneos-arm64e" ;;
     arm64)  TRIPLE="arm64-apple-ios15.0";  DEB_ARCH="iphoneos-arm64"  ;;
-    *) echo "未知 arch: $ARCH（只支持 arm64 / arm64e）" >&2; exit 1 ;;
+    *) echo "未知 arch: ${ARCH}（只支持 arm64 / arm64e）" >&2; exit 1 ;;
 esac
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :version' layout/Info.plist 2>/dev/null || echo 0.0.0)"
@@ -90,7 +90,7 @@ if [ "$SIGN" = "1" ]; then
         for key in com.apple.private.webkit.pasteboard com.apple.Pasteboard.background-access \
                    com.apple.private.security.no-sandbox; do
             if ! echo "$ENT" | grep -q "$key"; then
-                echo "!! 警告：entitlement 里缺少 $key，装上去读剪贴板会弹提示或被拒。" >&2
+                echo "!! 警告：entitlement 里缺少 ${key}，装上去读剪贴板会弹提示或被拒。" >&2
                 exit 1
             fi
         done
