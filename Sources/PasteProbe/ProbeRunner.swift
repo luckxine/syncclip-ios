@@ -55,8 +55,10 @@ final class ProbeRunner {
         //   它是 nil   → 说明连前台 App 都被拦，那不是隧道的锅
         let board = UIPasteboard.general
         let text = board.string
-        let summary = "changeCount=\(board.changeCount) "
-                    + "string=\(text == nil ? "nil（读不到）" : "\(text!.count) 字") "
+        // 把嵌套的插值拆出来：字符串插值里再嵌一个带三元的字符串插值虽然合法，
+        // 但一旦多语言字符和强解包混在一起，编译器报的错会很难读。
+        let lengthText = text.map { "\($0.count) 字" } ?? "nil（读不到）"
+        let summary = "changeCount=\(board.changeCount) string=\(lengthText) "
                     + "前缀=\(String((text ?? "").prefix(64)))"
         say("App 侧基线：\(summary)")
         // 也写进 App Group 日志，这样和隧道侧的记录能在同一时间轴上对比

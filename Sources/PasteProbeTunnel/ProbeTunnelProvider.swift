@@ -76,21 +76,22 @@ final class ProbeTunnelProvider: NEPacketTunnelProvider {
         completionHandler()
     }
 
-    /// NEProviderStopReason 没有公开的字符串描述，这里手写一份，免得日志里只剩一个数字
+    /// NEProviderStopReason 没有公开的字符串描述，这里手写一份，免得日志里只剩一个数字。
+    ///
+    /// 只列 iOS 15 就有的大小 —— `.configurationChange`、`.systemInitiated`、
+    /// `.unmetSystemRequirements` 都是更新的 SDK 才有的，在 iOS 15 SDK 上编译直接报
+    /// "has no member"。不确定的走 @unknown default 并把原始值打出来。
     static func reasonName(_ reason: NEProviderStopReason) -> String {
         switch reason {
         case .none: return "none"
         case .userInitiated: return "用户主动断开"
         case .providerFailed: return "provider 失败"
         case .noNetworkAvailable: return "无网络"
-        case .unmetSystemRequirements: return "系统要求不满足"
         case .userSwitch: return "用户切换"
         case .appUpdate: return "App 更新"
-        case .configurationChange: return "配置变更"
         case .idleTimeout: return "闲置超时"
-        case .systemInitiated: return "系统发起"
         case .userLogout: return "用户登出"
-        default: return "未知"
+        @unknown default: return "其他（rawValue=\(reason.rawValue)，这个系统版本认识它，我这边的 SDK 不认识）"
         }
     }
 
@@ -133,8 +134,10 @@ final class ProbeTunnelProvider: NEPacketTunnelProvider {
             ProbeLog.append(source: "tunnel", kind: "mainQueue.ran",
                             detail: "[\(tag)] 主队列确实被排空了（派上去的任务执行到了）")
         }
+        // 直接调真干活的（Now）而不是包装过的那个 —— 包装过的会再跳一次后台队列，
+        // 那就测不到「剪贴板调用在主线程上会不会卡住」了。
         DispatchQueue.main.async { [weak self] in
-            self?.pasteboardRoundTrip(tag: "\(tag)/主队列")
+            self?.pasteboardRoundTripNow(tag: "\(tag)/主队列")
         }
         ProbeLog.append(source: "tunnel", kind: "mainQueue.probe",
                         detail: "[\(tag)] 已向主队列派两个任务（一个不碰剪贴板、一个读剪贴板），"
@@ -145,13 +148,17 @@ final class ProbeTunnelProvider: NEPacketTunnelProvider {
 
     /// 两种探测都跑，因为「能不能碰」和「在哪个线程碰」是两个独立问题。
     /// 全部走后台队列 —— v1 已证实主队列不可靠。
+    ///
+    /// 注意：「派到后台」和「真干活」必须是两个不同名字的函数。
+    /// 之前两者同名同签名，Swift 直接报 invalid redeclaration —— 本地 lint 看不出来，
+    /// CI 上才炸。
     private func pasteboardRoundTrip(tag: String) {
-        DispatchQueue.global(qos: .utility).async {
-            self.pasteboardRoundTrip(tag: "\(tag)/后台线程")
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.pasteboardRoundTripNow(tag: "\(tag)/后台线程")
         }
     }
 
-    private func pasteboardRoundTrip(tag: String) {
+    private func pasteboardRoundTripNow(tag: String) {
         let board = UIPasteboard.general
         let count = board.changeCount
         let text = board.string ?? ""
@@ -177,8 +184,8 @@ final class ProbeTunnelProvider: NEPacketTunnelProvider {
     /// 只读快照：不动剪贴板，把读到的东西原样记下来。
     /// 这是 v2 的核心实验 —— 用户先在 Safari 复制一段文字，再让隧道读。
     private func snapshotOnBackground(tag: String) {
-        DispatchQueue.global(qos: .utility).async {
-            self.snapshot(tag: "\(tag)/后台线程")
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.snapshot(tag: "\(tag)/后台线程")
         }
     }
 
@@ -189,11 +196,11 @@ final class ProbeTunnelProvider: NEPacketTunnelProvider {
         let text: String? = board.string
         let types = board.types.joined(separator: ",")
         let prefix = String((text ?? "").prefix(64))
+        let lengthText = text.map { "\($0.count) 字" } ?? "nil（读不到）"
 
         ProbeLog.append(source: "tunnel", kind: "pasteboard.snapshot",
                         detail: "[\(tag)] changeCount=\(count) "
-                              + "string=\(text == nil ? "nil（读不到）" : "\(text!.count) 字") "
-                              + "types=[\(types)] 前缀=\(prefix)")
+                              + "string=\(lengthText) types=[\(types)] 前缀=\(prefix)")
 
         let info: [String: Any] = [
             "changeCount": count,
@@ -220,12 +227,12 @@ final class ProbeTunnelProvider: NEPacketTunnelProvider {
 
         switch cmd {
         case "ping":
-            completionHandler?(Probe.json([
-                "ok": true,
-                "ticks": ticks,
-                "thread": thread,
-                "lastClipboard": lastClipboard.isEmpty ? NSNull() : lastClipboard,
-            ]))
+            // 不写成字典里的三元表达式：`lastClipboard.isEmpty ? NSNull() : lastClipboard`
+            // 两个分支类型不同，在 [String: Any] 字面量里能不能隐式转成 Any 全看编译器心情，
+            // 不值得赌一个编译周期。直接分支组装。
+            var reply: [String: Any] = ["ok": true, "ticks": ticks, "thread": thread]
+            reply["lastClipboard"] = lastClipboard.isEmpty ? NSNull() as Any : lastClipboard
+            completionHandler?(Probe.json(reply))
 
         case "readPasteboard":
             // 从后台队列做，reply 时再回调（回调在哪都行）
