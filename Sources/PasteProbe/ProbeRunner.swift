@@ -67,8 +67,8 @@ final class ProbeRunner {
             send(json: ["cmd": "readPasteboard"], label: "readPasteboard")
         } else {
             say("隧道没在跑 → 拉起来（mode=readOnly）")
-            prepareConfiguration { session in
-                self.start(session: session, options: ["mode": "readOnly"])
+            prepareConfiguration { manager in
+                self.start(manager: manager, options: ["mode": "readOnly" as NSString])
             }
         }
     }
@@ -206,7 +206,18 @@ final class ProbeRunner {
         }
     }
 
-    private func start(session: NETunnelProviderSession, options: [String: NSObject]) {
+    /// 拉起隧道。
+    ///
+    /// 参数收 manager 而不是 session，是因为 `prepareConfiguration` 交出来的就是
+    /// manager —— 之前这里收 session，两处调用都传了 manager，CI 上四个编译错误
+    /// 全出在这个类型不匹配上。顺便把 session 存下来，IPC 要用。
+    private func start(manager: NETunnelProviderManager, options: [String: NSObject]) {
+        guard let session = manager.connection as? NETunnelProviderSession else {
+            say("❌ manager.connection 不是 NETunnelProviderSession，无法启动")
+            finish()
+            return
+        }
+        self.session = session
         do {
             try session.startVPNTunnel(options: options)
             say("✅ startVPNTunnel 已被接受，等隧道进程起来（最多等 30 秒）")
@@ -224,7 +235,7 @@ final class ProbeRunner {
             say("还没有隧道会话 —— 先点「运行探针」或「只读取剪贴板」把隧道建起来")
             return
         }
-        guard let data = ProbeTunnelProvider.json(json) else {
+        guard let data = Probe.json(json) else {
             say("消息序列化失败")
             return
         }
@@ -271,8 +282,8 @@ final class ProbeRunner {
         nonce = String(UUID().uuidString.prefix(8)).lowercased()
         board.string = Probe.txPrefix + nonce
         say("已把剪贴板写成 \(Probe.txPrefix)\(nonce)")
-        prepareConfiguration { session in
-            self.start(session: session, options: ["echoPasteboard": "1" as NSString])
+        prepareConfiguration { manager in
+            self.start(manager: manager, options: ["echoPasteboard": "1" as NSString])
         }
     }
 

@@ -40,6 +40,17 @@ public enum Probe {
     public static var logURL: URL? {
         containerURL?.appendingPathComponent(logFileName)
     }
+
+    /// App 与隧道之间的消息编码。
+    ///
+    /// 放在 Shared 里而不是各写一份：App 与 appex 是**两个模块**，
+    /// App 看不到 PasteProbeTunnel 里的类型（CI 上真踩了这个错：
+    /// "cannot find 'ProbeTunnelProvider' in scope"）。走 IPC 的 JSON 两边必须完全一致，
+    /// 写两份迟早会歪，而歪了的表现是「消息发出去了但对方说解析不了」——
+    /// 一个看上去像权限问题的格式问题。
+    public static func json(_ object: [String: Any]) -> Data? {
+        (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
+    }
 }
 
 /// 一条日志。写成 Codable 而不是纯文本，是为了让 App 能按字段渲染，

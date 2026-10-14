@@ -213,14 +213,14 @@ final class ProbeTunnelProvider: NEPacketTunnelProvider {
         guard let obj = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any],
               let cmd = obj["cmd"] as? String else {
             ProbeLog.append(source: "tunnel", kind: "ipc.bad", detail: "收到无法解析的 App 消息")
-            completionHandler?(Self.json(["ok": false, "error": "bad command"]))
+            completionHandler?(Probe.json(["ok": false, "error": "bad command"]))
             return
         }
         ProbeLog.append(source: "tunnel", kind: "ipc.command", detail: "收到 App 消息 cmd=\(cmd)（回调在\(thread)）")
 
         switch cmd {
         case "ping":
-            completionHandler?(Self.json([
+            completionHandler?(Probe.json([
                 "ok": true,
                 "ticks": ticks,
                 "thread": thread,
@@ -233,17 +233,17 @@ final class ProbeTunnelProvider: NEPacketTunnelProvider {
                 let info = self.snapshot(tag: "ipc/readPasteboard")
                 var out = info
                 out["ok"] = true
-                completionHandler?(Self.json(out))
+                completionHandler?(Probe.json(out))
             }
 
         case "fetch":
             let url = obj["url"] as? String ?? ""
             fetch(url) { result in
-                completionHandler?(Self.json(result))
+                completionHandler?(Probe.json(result))
             }
 
         default:
-            completionHandler?(Self.json(["ok": false, "error": "unknown cmd \(cmd)"]))
+            completionHandler?(Probe.json(["ok": false, "error": "unknown cmd \(cmd)"]))
         }
     }
 
@@ -279,9 +279,4 @@ final class ProbeTunnelProvider: NEPacketTunnelProvider {
         }.resume()
     }
 
-    // MARK: - 工具
-
-    static func json(_ object: [String: Any]) -> Data? {
-        (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
-    }
 }

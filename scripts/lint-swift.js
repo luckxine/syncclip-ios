@@ -386,6 +386,15 @@ function moduleOf(file) {
 function buildSymbolIndex(files) {
     const index = new Map();
     const moduleNames = new Set();
+    // 所有类型声明（含 internal），symbol → Set<module>
+    const allTypes = new Map();
+    // 其中 public/open 的，symbol → Set<module>
+    const publicTypes = new Map();
+
+    const add = (map, symbol, owner) => {
+        if (!map.has(symbol)) map.set(symbol, new Set());
+        map.get(symbol).add(owner);
+    };
 
     for (const file of files) {
         const owner = moduleOf(file);
@@ -393,13 +402,20 @@ function buildSymbolIndex(files) {
         moduleNames.add(owner);
         const clean = strip(fs.readFileSync(file, 'utf8'));
 
-        // 类型声明：不计嵌套深度，因为嵌套类型也是通过外层类型名访问的
-        for (const re of [
-            /\b(?:public|open)\s+(?:final\s+)?(?:struct|class|enum|protocol|actor)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
-        ]) {
-            for (const m of clean.matchAll(re)) {
-                if (!index.has(m[1])) index.set(m[1], owner);
+        // 类型声明：不计嵌套深度，因为嵌套类型也是通过外层类型名访问的。
+        // 访问修饰符必须用捕获组取 —— 不能用 `m.index - 12` 去回看：
+        // 匹配本身就是从修饰符开始的，往回看只会看到前一个声明。
+        // （写错过一次：把源码里所有 public 类型都当成 internal，报了 52 个假问题。）
+        for (const m of clean.matchAll(
+            /\b(?:(public|open|private|fileprivate|internal)\s+)?(?:final\s+)?(?:struct|class|enum|protocol|actor)\s+([A-Za-z_][A-Za-z0-9_]*)/g)) {
+            const access = m[1] || 'internal';
+            const symbol = m[2];
+            const isPublic = access === 'public' || access === 'open';
+            if (isPublic) {
+                if (!index.has(symbol)) index.set(symbol, owner);
+                add(publicTypes, symbol, owner);
             }
+            add(allTypes, symbol, owner);
         }
 
         // 文件顶层的 public 函数/变量（跟嵌套深度追踪，只在深度 0 时收）
@@ -418,7 +434,7 @@ function buildSymbolIndex(files) {
         }
     }
 
-    return { index, moduleNames };
+    return { index, moduleNames, allTypes, publicTypes };
 }
 
 /// 找出「用了某个模块的符号，但没有 import 那个模块」
@@ -443,12 +459,43 @@ function findMissingImports(file, clean, symbolIndex, problems) {
     }
 }
 
+/// 找出「用了别的模块的**内部**类型」。
+///
+/// 这一类错误和「忘了 import」长得像，但完全不同：internal 是模块级可见性，
+/// **光加 import 也救不了**，得把那个类型挪到共享模块去。
+/// 真踩过一次：App 侧写了 `ProbeTunnelProvider.json(…)`，而那个类型在 appex 模块里，
+/// 是本模块内部的工具函数 —— 本地 lint 没发现，到 CI 上变成四个编译错误。
+/// 症状是 `cannot find 'ProbeTunnelProvider' in scope`，看起来像少了个 import，
+/// 很容易顺手去加 import 然后继续碰壁。
+function findCrossModuleInternal(file, clean, allTypes, publicTypes, problems) {
+    const imports = new Set();
+    for (const m of clean.matchAll(/^\s*import\s+([A-Za-z_][A-Za-z0-9_]*)/gm)) {
+        imports.add(m[1]);
+    }
+    const self = moduleOf(file);
+    const body = clean.replace(/^\s*import\s+.*$/gm, '');
+
+    for (const [symbol, owners] of allTypes) {
+        if (owners.has(self)) continue;                    // 自己模块也有同名类型，按自己的算
+        const pub = publicTypes.get(symbol) || new Set();
+        // 有一个「已 import 且是 public」的提供方 → 合法
+        if ([...owners].some((o) => imports.has(o) && pub.has(o))) continue;
+        // 只报「哪里都没 public 过」的情况。若有 public 提供方但没 import，
+        // 那是上一条检查（跨模块符号没 import）的事，别重复报。
+        if ([...owners].some((o) => pub.has(o))) continue;
+        if (!new RegExp(`\\b${symbol}\\b`).test(body)) continue;
+        problems.push(
+            `${symbol} 是 ${[...owners].join('/')} 的**内部**类型（非 public），跨模块用不了 `
+          + `—— 加 import 也没用，得把它挪到共享模块。`);
+    }
+}
+
 let failures = 0;
 let files = 0;
 
 const allFiles = listSwift(SRC);
 // 符号索引用整个项目的源码，而不是 lint 目标
-const { index: symbolIndex } = buildSymbolIndex(listSwift(INDEX_ROOT));
+const { index: symbolIndex, allTypes, publicTypes } = buildSymbolIndex(listSwift(INDEX_ROOT));
 
 for (const file of allFiles) {
     files++;
@@ -502,6 +549,9 @@ for (const file of allFiles) {
 
     // 5. 用了别的模块的符号却没 import
     findMissingImports(file, clean, symbolIndex, problems);
+
+    // 5b. 用了别的模块的**内部**类型（加 import 也救不了，得挪进共享模块）
+    findCrossModuleInternal(file, clean, allTypes, publicTypes, problems);
 
     // 6. 用了系统框架的符号却没 import 对应模块
     findMissingSystemImports(clean, problems);

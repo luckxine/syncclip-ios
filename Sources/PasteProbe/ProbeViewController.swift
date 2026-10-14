@@ -111,7 +111,6 @@ final class ProbeViewController: UIViewController {
         button.layer.borderWidth = 1
         button.layer.borderColor = UIColor.systemBlue.cgColor
         button.layer.cornerRadius = 6
-        button.contentEdgeInsets = UIEdgeInsets(top: 4, left: 2, bottom: 4, right: 2)
         button.addTarget(self, action: action, for: .touchUpInside)
         return button
     }
