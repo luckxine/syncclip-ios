@@ -172,8 +172,8 @@ SDF 三角形符号写反、zip 的 external attributes 32 位溢出。
 
 最新 ipa 在 Releases 里：**https://github.com/luckxine/syncclip-ios/releases/latest**
 
-- `SyncClipboard_1.0.0_arm64.ipa` —— 用这个（arm64 在 arm64e 机型上也能跑）
-- `SyncClipboard_1.0.0_arm64e.ipa` —— 备用
+- `SyncClipboard_1.1.0_arm64.ipa` —— 用这个（arm64 在 arm64e 机型上也能跑）
+- `SyncClipboard_1.1.0_arm64e.ipa` —— 备用
 
 1. 把 ipa 传到 iPhone（AirDrop / 自建网盘 / iCloud 都行），**用 TrollStore 打开安装**。
 2. 打开 App → **诊断** 页 → 右上角 … → 「重新诊断」。
