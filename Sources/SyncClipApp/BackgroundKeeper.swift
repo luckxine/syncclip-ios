@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import SyncClipCore
 
 /// 后台保活。
 ///

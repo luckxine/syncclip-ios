@@ -9,6 +9,10 @@
 //   3. 明显的非法写法：async 函数带 inout 参数（Swift 不允许）
 //   4. 同一个 switch 的不同 case 里重复声明同名变量
 //      —— 各 case 是否共享作用域在语言层面存在歧义，这里一律要求用不同名字，零成本避坑
+//   5. **跨模块符号引用了但没 import** —— 这条是真踩过的坑：
+//      BackgroundKeeper.swift 用了 SCLog 却只 import 了 Foundation/AVFoundation。
+//      本地没有编译器时完全看不出，CI 上第一次编译才报 "cannot find 'SCLog' in scope"。
+//      这里按「符号定义索引 → 提供它的模块」静态查出来，而不是猜前缀。
 //
 // 注意：这只是轻量体检，真正的编译验证只能在 macOS + Xcode 上做。
 
@@ -16,8 +20,11 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-// 可以传一个目录或单个文件作为参数（自测用；默认扫仓库的 Sources/）
+// lint 的目标（可以传一个目录或单个文件用于自测；默认扫仓库的 Sources/）
 const SRC = path.resolve(process.argv[2] || path.join(ROOT, 'Sources'));
+// 符号索引**始终**从整个项目的 Sources 建，不能只扫 lint 目标：
+// 只给一个文件时（自测场景），模块归属根本算不出来，第五项检查会静默空转 —— 那就等于没检查。
+const INDEX_ROOT = path.resolve(process.argv[3] || path.join(ROOT, 'Sources'));
 
 function listSwift(target) {
     const st = fs.statSync(target);
@@ -141,10 +148,86 @@ function findSwitchCaseCollisions(clean, problems) {
     });
 }
 
+/// 从文件路径推断它属于哪个 target（相对 INDEX_ROOT 的第一层目录名）
+function moduleOf(file) {
+    const rel = path.relative(INDEX_ROOT, file).split(path.sep);
+    return rel.length > 1 ? rel[0] : null;
+}
+
+/// 扫一遍 Sources，建「public 符号名 → 所属模块」索引。
+///
+/// 只收**类型声明**和**文件顶层**的 public 函数/变量，不收类型成员。
+/// 原因：成员（如 SCLog.info、SCInAppLog.append）在任何地方都得通过其类型名访问，
+/// 所以把类型名索引到了就够了；把成员名也收进去只会产生一堆
+/// 「使用了 SyncClipCore 的 append」这种噪声。
+function buildSymbolIndex(files) {
+    const index = new Map();
+    const moduleNames = new Set();
+
+    for (const file of files) {
+        const owner = moduleOf(file);
+        if (!owner) continue;
+        moduleNames.add(owner);
+        const clean = strip(fs.readFileSync(file, 'utf8'));
+
+        // 类型声明：不计嵌套深度，因为嵌套类型也是通过外层类型名访问的
+        for (const re of [
+            /\b(?:public|open)\s+(?:final\s+)?(?:struct|class|enum|protocol|actor)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
+        ]) {
+            for (const m of clean.matchAll(re)) {
+                if (!index.has(m[1])) index.set(m[1], owner);
+            }
+        }
+
+        // 文件顶层的 public 函数/变量（跟嵌套深度追踪，只在深度 0 时收）
+        let depth = 0;
+        for (const line of clean.split('\n')) {
+            if (depth === 0) {
+                const m = line.match(
+                    /^\s*(?:public|open)\s+(?:static\s+)?(?:func|var|let)\s+([A-Za-z_][A-Za-z0-9_]*)/);
+                if (m && !index.has(m[1])) index.set(m[1], owner);
+            }
+            for (const ch of line) {
+                if (ch === '{') depth++;
+                else if (ch === '}') depth--;
+            }
+            if (depth < 0) depth = 0;
+        }
+    }
+
+    return { index, moduleNames };
+}
+
+/// 找出「用了某个模块的符号，但没有 import 那个模块」
+function findMissingImports(file, clean, symbolIndex, problems) {
+    const imports = new Set();
+    for (const m of clean.matchAll(/^\s*import\s+([A-Za-z_][A-Za-z0-9_]*)/gm)) {
+        imports.add(m[1]);
+    }
+
+    const self = moduleOf(file);
+    const body = clean.replace(/^\s*import\s+.*$/gm, '');
+    const seen = new Set();
+
+    for (const [symbol, owner] of symbolIndex) {
+        if (imports.has(owner)) continue;      // 已经 import 了提供它的模块
+        if (owner === self) continue;          // 自己模块内，不用 import
+        if (seen.has(symbol)) continue;
+        // 用词边界匹配，避开 "SCLogLevel" 这类前缀相同的误判
+        if (!new RegExp(`\\b${symbol}\\b`).test(body)) continue;
+        seen.add(symbol);
+        problems.push(`使用了 ${owner} 的 ${symbol}，但没有 \`import ${owner}\``);
+    }
+}
+
 let failures = 0;
 let files = 0;
 
-for (const file of listSwift(SRC)) {
+const allFiles = listSwift(SRC);
+// 符号索引用整个项目的源码，而不是 lint 目标
+const { index: symbolIndex } = buildSymbolIndex(listSwift(INDEX_ROOT));
+
+for (const file of allFiles) {
     files++;
     const src = fs.readFileSync(file, 'utf8');
     const clean = strip(src);
@@ -190,6 +273,9 @@ for (const file of listSwift(SRC)) {
 
     // 4. switch case 重名
     findSwitchCaseCollisions(clean, problems);
+
+    // 5. 用了别的模块的符号却没 import
+    findMissingImports(file, clean, symbolIndex, problems);
 
     if (problems.length > 0) {
         failures += problems.length;
