@@ -291,6 +291,41 @@ function findSwitchCaseCollisions(clean, problems) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// iOS 16+ 专属 API
+//
+// 目标是最低 iOS 15.5，所以这些都不能用。手动 grep 过好几轮，干脆固化成检查：
+// 已经在 .fontWeight()、.bold()、NavigationStack 上各撞过一次。
+// ---------------------------------------------------------------------------
+
+const NEWER_THAN_IOS15 = [
+    { re: /\.fontWeight\s*\(/, note: 'View 上的 .fontWeight() 是 iOS 16+。改用 .font(.system(size:weight:))，或把它加在 Text 上' },
+    { re: /\.bold\s*\(\s*\)/, note: 'View 上的 .bold() 是 iOS 16+。改用 .font(.system(size:weight:))' },
+    { re: /\bNavigationStack\b/, note: 'iOS 16+。用 NavigationView + .navigationViewStyle(.stack)' },
+    { re: /\.presentationDetents\s*\(/, note: 'iOS 16+' },
+    { re: /\.presentationBackground\s*\(/, note: 'iOS 16.4+' },
+    { re: /\.scrollContentBackground\s*\(/, note: 'iOS 16+' },
+    { re: /\bLabeledContent\s*\(/, note: 'iOS 16+。改用 HStack { Text; Spacer; Text }' },
+    { re: /\bContentUnavailableView\b/, note: 'iOS 17+。用自建的 SCEmptyState' },
+    { re: /\.reservesSpace\b/, note: 'iOS 16+' },
+    { re: /\.fontDesign\s*\(/, note: 'iOS 16+' },
+    { re: /\bGrid\s*\(/, note: 'iOS 16+。用 LazyVGrid（iOS 14+）' },
+    { re: /\bGridRow\s*\(/, note: 'iOS 16+' },
+    { re: /\.toolbarBackground\s*\(/, note: 'iOS 16+' },
+    { re: /\.contentMargins\s*\(/, note: 'iOS 17+' },
+    { re: /\bShareLink\s*\(/, note: 'iOS 16+。用 UIActivityViewController' },
+    { re: /\.scrollIndicators\s*\(/, note: 'iOS 16+' },
+    { re: /\.containerRelativeFrame\s*\(/, note: 'iOS 17+' },
+];
+
+function findNewerAPIs(clean, problems) {
+    for (const entry of NEWER_THAN_IOS15) {
+        if (entry.re.test(clean)) {
+            problems.push(`用了 iOS 16+ 的 API（目标是 15.5）：${entry.note}`);
+        }
+    }
+}
+
 /// 系统框架的符号 → 必须直接 import 的模块。
 ///
 /// 只列会真实踩坑的：UIKit 的符号不能指望 SwiftUI 帮忙转出，
@@ -470,6 +505,9 @@ for (const file of allFiles) {
 
     // 6. 用了系统框架的符号却没 import 对应模块
     findMissingSystemImports(clean, problems);
+
+    // 7. 用了 iOS 16+ 的 API
+    findNewerAPIs(clean, problems);
 
     if (problems.length > 0) {
         failures += problems.length;

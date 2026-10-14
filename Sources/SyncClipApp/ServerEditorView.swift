@@ -56,9 +56,14 @@ struct ServerEditorView: View {
                     Button("取消") { dismiss() }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("保存") { save() }
-                        .disabled(validationError != nil)
-                        .fontWeight(.semibold)
+                    Button {
+                        save()
+                    } label: {
+                        // 注意：View 上的 .fontWeight() 是 iOS 16+，
+                        // 放在 Text 上才兼容 15
+                        Text("保存").font(.system(size: 17, weight: .semibold))
+                    }
+                    .disabled(validationError != nil)
                 }
             }
         }
