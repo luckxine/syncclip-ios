@@ -157,6 +157,10 @@ final class ProbeRunner {
     /// v1 里每次运行都先删掉旧配置再建新的，副作用是：删配置会连带把正在跑的隧道
     /// 停掉（日志里那条 `stopTunnel reason=…`）。真实现绝不能让 App 一启动就把
     /// 常驻的隧道掐了，所以这里改成「有就复用」。
+    ///
+    /// 两条路径最后都走 `reloadAndEnable` —— 复用一条**没有重新读入**的配置就启动，
+    /// 和拿一条 `isEnabled=false` 的配置去启动，都会失败（实测后者报
+    /// NEVPNErrorDomain code=2）。
     private func prepareConfiguration(_ done: @escaping (NETunnelProviderManager) -> Void) {
         say("读取本 App 以前建过的 VPN 配置…")
         NETunnelProviderManager.loadAllFromPreferences { managers, error in
@@ -169,40 +173,128 @@ final class ProbeRunner {
                         .providerBundleIdentifier == Probe.tunnelBundleID
                 }
                 if let existing = existing {
-                    self.say("✅ 复用已有配置（不删除 —— 删配置会把正在跑的隧道一起停掉）")
+                    self.say("✅ 找到已有配置（不删除 —— 删配置会把正在跑的隧道一起停掉）")
                     self.manager = existing
                     self.session = existing.connection as? NETunnelProviderSession
-                    done(existing)
+                    self.reloadAndEnable(existing, done: done)
                     return
                 }
-                self.say("没有可用配置，新建一条")
-                self.say("（系统会弹一次「允许添加 VPN 配置」，需要面容/密码确认）")
-                let manager = NETunnelProviderManager()
-                let proto = NETunnelProviderProtocol()
-                proto.serverAddress = "pasteprobe.local"
-                proto.providerBundleIdentifier = Probe.tunnelBundleID
-                manager.protocolConfiguration = proto
-                manager.localizedDescription = "PasteProbe 探针"
+                self.createConfiguration(done)
+            }
+        }
+    }
+
+    /// 从系统里**重新读一遍**配置，必要时把它重新启用，然后交出去。
+    ///
+    /// 为什么必须重读：`loadAllFromPreferences` 拿到的 manager 只是「注册表里的一条
+    /// 记录」，要真正操作它（尤其是启动）得先 `loadFromPreferences`。
+    ///
+    /// 为什么必须查 isEnabled：v1.0.1 在真机上实测过 —— 隧道先被系统以
+    /// `reason=11` 停掉，之后**每一次** `startVPNTunnel` 都报
+    /// `NEVPNErrorDomain code=2`（ConfigurationDisabled）。配置被禁用是
+    /// 「用户能在设置里干、系统也能替你干」的事（重装 App 就可能触发），
+    /// 一个常驻服务必须能自己发现并重新启用，否则一次意外的禁用就永久躺了。
+    private func reloadAndEnable(_ manager: NETunnelProviderManager,
+                                done: @escaping (NETunnelProviderManager) -> Void) {
+        manager.loadFromPreferences { error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    self.say("⚠️ loadFromPreferences 出错（继续试）：\(Self.describe(error))")
+                }
+                self.say("配置状态：\(self.stateDescription(manager))")
+                guard !manager.isEnabled else {
+                    done(manager)
+                    return
+                }
+                self.say("⚠️ 配置处于**禁用**状态（isEnabled=false）—— 这正是 code=2")
+                self.say("   （ConfigurationDisabled）的成因。现在自动重新启用…")
                 manager.isEnabled = true
                 manager.saveToPreferences { error in
                     DispatchQueue.main.async {
                         if let error = error {
-                            self.say("❌ saveToPreferences 失败：\(Self.describe(error))")
-                            self.say("   → 这一步失败的含义：系统不认这个由伪造签名带进来的")
-                            self.say("     networkextension entitlement。NE 路线到此为止，")
-                            self.say("     改走音频/位置保活。（先把 entitlement 与 StosVPN 对齐再试一次，")
-                            self.say("     见 docs/probe.md 的「失败了怎么办」）")
+                            self.say("❌ 重新启用失败：\(Self.describe(error))")
+                            self.say("   用「重置 VPN 配置」按钮重建，或到 设置 → 通用 →")
+                            self.say("   VPN与设备管理 → VPN 里把那条配置删掉。")
                             return
                         }
-                        self.say("✅ saveToPreferences 成功 —— 系统接受了这个 VPN 配置")
-                        manager.loadFromPreferences { _ in
-                            DispatchQueue.main.async {
-                                self.manager = manager
-                                self.session = manager.connection as? NETunnelProviderSession
-                                done(manager)
-                            }
-                        }
+                        self.say("✅ 已重新启用")
+                        done(manager)
                     }
+                }
+            }
+        }
+    }
+
+    private func createConfiguration(_ done: @escaping (NETunnelProviderManager) -> Void) {
+        say("新建一条配置")
+        say("（系统会弹一次「允许添加 VPN 配置」，需要面容/密码确认）")
+        let manager = NETunnelProviderManager()
+        let proto = NETunnelProviderProtocol()
+        proto.serverAddress = "pasteprobe.local"
+        proto.providerBundleIdentifier = Probe.tunnelBundleID
+        manager.protocolConfiguration = proto
+        manager.localizedDescription = "PasteProbe 探针"
+        manager.isEnabled = true
+        manager.saveToPreferences { error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    self.say("❌ saveToPreferences 失败：\(Self.describe(error))")
+                    self.say("   → 这一步失败的含义：系统不认这个由伪造签名带进来的")
+                    self.say("     networkextension entitlement。NE 路线到此为止，")
+                    self.say("     改走音频/位置保活。（先把 entitlement 与 StosVPN 对齐再试一次，")
+                    self.say("     见 docs/probe.md 的「失败了怎么办」）")
+                    return
+                }
+                self.say("✅ saveToPreferences 成功 —— 系统接受了这个 VPN 配置")
+                self.manager = manager
+                self.session = manager.connection as? NETunnelProviderSession
+                self.reloadAndEnable(manager, done: done)
+            }
+        }
+    }
+
+    /// 把一条配置的全套状态打成一行 —— 启动失败时这一行比任何猜测都有用
+    private func stateDescription(_ manager: NETunnelProviderManager) -> String {
+        let proto = manager.protocolConfiguration as? NETunnelProviderProtocol
+        return "isEnabled=\(manager.isEnabled) "
+             + "按需=\(manager.isOnDemandEnabled) "
+             + "连接=\(Self.statusName(manager.connection.status)) "
+             + "provider=\(proto?.providerBundleIdentifier ?? "nil")"
+    }
+
+    /// 删掉本探针建的所有配置（给「重置」和「重建后重试」用）
+    private func removeAll(_ managers: [NETunnelProviderManager], done: @escaping () -> Void) {
+        guard let head = managers.first else {
+            done()
+            return
+        }
+        head.removeFromPreferences { error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    self.say("删除一条配置失败：\(Self.describe(error))")
+                }
+                self.removeAll(Array(managers.dropFirst()), done: done)
+            }
+        }
+    }
+
+    /// 重置：删掉本探针的 VPN 配置，下次运行会新建一条崭新的
+    func resetConfiguration() {
+        say("========== 重置 VPN 配置 ==========")
+        NETunnelProviderManager.loadAllFromPreferences { managers, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    self.say("读配置出错：\(Self.describe(error))")
+                }
+                let ours = (managers ?? []).filter {
+                    ($0.protocolConfiguration as? NETunnelProviderProtocol)?
+                        .providerBundleIdentifier == Probe.tunnelBundleID
+                }
+                self.say("找到 \(ours.count) 条属于本探针的配置，逐条删除…")
+                self.removeAll(ours) {
+                    self.manager = nil
+                    self.session = nil
+                    self.say("✅ 已删完。再点「① 运行探针」会新建一条启用的配置。")
                 }
             }
         }
@@ -213,20 +305,58 @@ final class ProbeRunner {
     /// 参数收 manager 而不是 session，是因为 `prepareConfiguration` 交出来的就是
     /// manager —— 之前这里收 session，两处调用都传了 manager，CI 上四个编译错误
     /// 全出在这个类型不匹配上。顺便把 session 存下来，IPC 要用。
-    private func start(manager: NETunnelProviderManager, options: [String: NSObject]) {
+    private func start(manager: NETunnelProviderManager,
+                       options: [String: NSObject],
+                       isRetry: Bool = false) {
         guard let session = manager.connection as? NETunnelProviderSession else {
             say("❌ manager.connection 不是 NETunnelProviderSession，无法启动")
             finish()
             return
         }
         self.session = session
+        say("启动前状态：\(stateDescription(manager))")
         do {
             try session.startVPNTunnel(options: options)
             say("✅ startVPNTunnel 已被接受，等隧道进程起来（最多等 30 秒）")
+            say("   （若超时看不到 echo，就点「刷新日志」看隧道侧自己写了什么）")
             startPolling()
         } catch {
             say("❌ startVPNTunnel 抛错：\(Self.describe(error))")
+            let ns = error as NSError
+            let configBroken = ns.domain == "NEVPNErrorDomain" && [1, 2, 4].contains(ns.code)
+            if !isRetry && configBroken {
+                say("   这三个 code 都不是「隧道起不来」，是「这条配置不能用了」：")
+                say("     1=ConfigurationInvalid  2=ConfigurationDisabled  4=ConfigurationStale")
+                say("   → 改成：删掉现有配置、重建一条崭新的，再试一次")
+                rebuildAndRetry(options: options)
+                return
+            }
+            if isRetry {
+                say("   ⚠️ 重建配置之后还是同样的错 —— 那就不是配置可用性的问题了。")
+                say("   去 设置 → 通用 → VPN与设备管理 → VPN 看那条配置在不在、是不是关着的。")
+            }
             finish()
+        }
+    }
+
+    /// 配置级错误（禁用/过期/无效）的自救：删掉重建，然后重试一次。
+    /// 只重试一次，不循环 —— 否则如果错误另有原因，会变成删配置死循环，
+    /// 反而把「用户手动建好的、可能本来能跑的配置」反复洗掉。
+    private func rebuildAndRetry(options: [String: NSObject]) {
+        NETunnelProviderManager.loadAllFromPreferences { managers, _ in
+            DispatchQueue.main.async {
+                let ours = (managers ?? []).filter {
+                    ($0.protocolConfiguration as? NETunnelProviderProtocol)?
+                        .providerBundleIdentifier == Probe.tunnelBundleID
+                }
+                self.removeAll(ours) {
+                    self.manager = nil
+                    self.session = nil
+                    self.prepareConfiguration { manager in
+                        self.start(manager: manager, options: options, isRetry: true)
+                    }
+                }
+            }
         }
     }
 
@@ -361,10 +491,29 @@ final class ProbeRunner {
     static func describe(_ error: Error) -> String {
         let e = error as NSError
         var s = "\(e.domain) code=\(e.code) “\(e.localizedDescription)”"
+        if e.domain == "NEVPNErrorDomain" {
+            s += "\n     → \(vpnErrorName(e.code))"
+        }
         if let underlying = e.userInfo[NSUnderlyingErrorKey] as? NSError {
             s += " ← \(underlying.domain) code=\(underlying.code)"
         }
         return s
+    }
+
+    /// 把 NEVPNErrorDomain 的数字翻译成名字。
+    /// 实测里最要紧的就是 code=2（ConfigurationDisabled）——
+    /// 光看数字完全看不出是「配置被禁用了」而不是「隧道起不来」。
+    static func vpnErrorName(_ code: Int) -> String {
+        switch code {
+        case 1: return "ConfigurationInvalid：配置无效，得删掉重建"
+        case 2: return "ConfigurationDisabled：配置被禁用（本 App 会自动重新启用并重试；"
+                     + "不行就用「重置 VPN 配置」）"
+        case 3: return "ConnectionFailed：连接失败（隧道进程起不来）"
+        case 4: return "ConfigurationStale：配置过期，需要重新 load/save"
+        case 5: return "ConfigurationReadWriteFailed：配置写入失败"
+        case 6: return "ConfigurationUnknown：未知配置错误"
+        default: return "未知的 NEVPNError code"
+        }
     }
 
     static func statusName(_ status: NEVPNStatus) -> String {

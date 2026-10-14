@@ -45,7 +45,7 @@ final class ProbeViewController: UIViewController {
 
     private func buildUI() {
         let title = UILabel()
-        title.text = "NE 探针 v1.0.1 · 非越狱设备能不能跑网络扩展"
+        title.text = "NE 探针 · 非越狱设备能不能跑网络扩展"
         title.font = .boldSystemFont(ofSize: 15)
         title.numberOfLines = 0
 
@@ -76,17 +76,20 @@ final class ProbeViewController: UIViewController {
         ])
         let row2 = makeRow([
             makeButton("④ App↔隧道", #selector(pingTapped)),
+            makeButton("停止隧道", #selector(stopTapped)),
+            makeButton("开机自启", #selector(onDemandTapped)),
+        ])
+        let row3 = makeRow([
+            makeButton("重置 VPN 配置", #selector(resetTapped)),
             makeButton("刷新日志", #selector(dumpTapped)),
             makeButton("清空日志", #selector(clearTapped)),
         ])
-        let row3 = makeRow([
-            makeButton("停止隧道", #selector(stopTapped)),
-            makeButton("开机自启", #selector(onDemandTapped)),
+        let row4 = makeRow([
             makeButton("还原剪贴板", #selector(restoreTapped)),
         ])
 
         let stack = UIStackView(arrangedSubviews: [
-            title, statusLabel, urlField, row1, row2, row3, logView,
+            title, statusLabel, urlField, row1, row2, row3, row4, logView,
         ])
         stack.axis = .vertical
         stack.spacing = 7
@@ -144,6 +147,8 @@ final class ProbeViewController: UIViewController {
 
     @objc private func restoreTapped() { runner.restoreClipboard() }
 
+    @objc private func resetTapped() { runner.resetConfiguration() }
+
     @objc private func clearTapped() {
         ProbeLog.clear()
         append("已清空 App Group 日志")
@@ -173,7 +178,8 @@ final class ProbeViewController: UIViewController {
                    + "前缀=\(String(clip.prefix(24)))")
         if let session = runner.session {
             lines.append("隧道：\(ProbeRunner.statusName(session.status))"
-                       + "   开机自启=\(runner.manager?.isOnDemandEnabled == true)")
+                       + "   开机自启=\(runner.manager?.isOnDemandEnabled == true)"
+                       + "   配置启用=\(runner.manager?.isEnabled == true)")
         } else {
             lines.append("隧道：（还没有配置）")
         }

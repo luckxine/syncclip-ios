@@ -76,22 +76,52 @@ final class ProbeTunnelProvider: NEPacketTunnelProvider {
         completionHandler()
     }
 
-    /// NEProviderStopReason 没有公开的字符串描述，这里手写一份，免得日志里只剩一个数字。
+    /// NEProviderStopReason 没有公开的字符串描述，这里手写一份，免得日志里只剩下一个数字。
     ///
-    /// 只列 iOS 15 就有的大小 —— `.configurationChange`、`.systemInitiated`、
-    /// `.unmetSystemRequirements` 都是更新的 SDK 才有的，在 iOS 15 SDK 上编译直接报
-    /// "has no member"。不确定的走 @unknown default 并把原始值打出来。
+    /// ⚠️ 真机上就靠这个查到了一次关键线索：日志里的 `reason=11` 是
+    /// **superceded** —— 意思是「这条配置被另一条取代了」（实证就是重装 App
+    /// 之后旧配置被顶掉）。这条一看到，后面那一串 `code=2` 就全解释通了。
+    ///
+    /// 两个实现细节是故意的：
+    ///   1. switch 里只列确定在每个 SDK 里都存在的大小（苹果陆续加过
+    ///      appUpdate / connectionFailed / sleep / internalError；而
+    ///      unmetSystemRequirements / configurationChange 这类名字根本不存在，
+    ///      写了就编不过 —— 我猜错过一次，CI 报了三个 "has no member"）。
+    ///   2. 剩下的按 **rawValue 查表**，不按 case 名：数值是按声明顺序排的，稳定；
+    ///      case 名在不同 SDK 里会变（苹果自己把 superceded 拼成过单 s）。
     static func reasonName(_ reason: NEProviderStopReason) -> String {
         switch reason {
         case .none: return "none"
         case .userInitiated: return "用户主动断开"
         case .providerFailed: return "provider 失败"
         case .noNetworkAvailable: return "无网络"
-        case .userSwitch: return "用户切换"
+        case .userSwitch: return "用户切换（macOS 才有）"
         case .appUpdate: return "App 更新"
         case .idleTimeout: return "闲置超时"
-        case .userLogout: return "用户登出"
-        @unknown default: return "其他（rawValue=\(reason.rawValue)，这个系统版本认识它，我这边的 SDK 不认识）"
+        case .userLogout: return "用户登出（macOS 才有）"
+        default: break
+        }
+        return rawReasonName(reason.rawValue)
+    }
+
+    /// 按 rawValue 认剩下的（声明顺序：none0 userInitiated1 providerFailed2
+    /// noNetworkAvailable3 unrecoverableNetworkChange4 providerDisabled5
+    /// authenticationCanceled6 configurationFailed7 idleTimeout8
+    /// configurationDisabled9 configurationRemoved10 superceded11 userLogout12
+    /// userSwitch13 appUpdate14 connectionFailed15 sleep16 internalError17）
+    static func rawReasonName(_ raw: Int) -> String {
+        switch raw {
+        case 4: return "网络不可恢复地变了（unrecoverableNetworkChange）"
+        case 5: return "provider 被禁用（providerDisabled）"
+        case 6: return "认证被取消（authenticationCanceled）"
+        case 7: return "配置无效（configurationFailed）"
+        case 9: return "配置被禁用（configurationDisabled）"
+        case 10: return "配置被删除（configurationRemoved）"
+        case 11: return "配置被取代（superceded）—— 重装 App / 重新注册配置时会出现"
+        case 15: return "连接失败（connectionFailed）"
+        case 16: return "系统睡眠（sleep）"
+        case 17: return "provider 内部错误（internalError）"
+        default: return "未知（rawValue=\(raw)）"
         }
     }
 
