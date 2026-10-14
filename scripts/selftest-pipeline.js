@@ -233,6 +233,76 @@ function checkShellScripts() {
 }
 
 // ===========================================================================
+// SigV4 自检基线的独立校验
+//
+// App 里有一个运行时自检：拿 AWS 官方测试向量跑一遍签名密钥派生，对不上就在诊断页报错。
+// 但那个自检本身依赖写在 SCSigV4.swift 里的“期望值”。如果写错了，
+// 自检会反过来把正确的实现判成错的（或者更糟：把一个错实现判成对的）。
+//
+// 所以这里用 node 的 crypto 独立算一遍，确认写在 Swift 里的测试向量确实正确。
+// 这样「CI 验向量 → 向量验 Swift 实现」就成了一条完整的链。
+// ===========================================================================
+
+function checkSigV4Vector() {
+    console.log('[SigV4 自检基线]');
+    const src = fs.readFileSync(
+        path.join(ROOT, 'Sources/SyncClipCore/SCSigV4.swift'), 'utf8');
+
+    // 从 Swift 源码里把自检用的输入和期望值抓出来，而不是在这里重抄一遍
+    const secret = src.match(/secretAccessKey:\s*"([^"]+)"/);
+    const dateStamp = src.match(/dateStamp:\s*"(\d{8})"/);
+    const region = src.match(/region:\s*"([a-z0-9-]+)"/);
+    const service = src.match(/service:\s*"([a-z0-9]+)"\s*\)/);
+    const expected = src.match(/let expected = "([0-9a-f]{64})"/);
+
+    const problems = [];
+    if (!secret) problems.push('抓不到 secretAccessKey');
+    if (!dateStamp) problems.push('抓不到 dateStamp');
+    if (!region) problems.push('抓不到 region');
+    if (!service) problems.push('抓不到 service');
+    if (!expected) problems.push('抓不到 expected 签名密钥');
+
+    if (problems.length) {
+        problems.forEach((p) => console.log(`  ❌ ${p}`));
+        return problems.length;
+    }
+
+    const crypto = require('crypto');
+    const hmac = (key, data) => crypto.createHmac('sha256', key).update(data, 'utf8').digest();
+
+    const kDate = hmac('AWS4' + secret[1], dateStamp[1]);
+    const kRegion = hmac(kDate, region[1]);
+    const kService = hmac(kRegion, service[1]);
+    const kSigning = hmac(kService, 'aws4_request').toString('hex');
+
+    if (kSigning !== expected[1]) {
+        console.log(`  ❌ SCSigV4.swift 里的期望值不对`);
+        console.log(`     源码写的：${expected[1]}`);
+        console.log(`     实际应为：${kSigning}`);
+        return 1;
+    }
+
+    console.log(`  ✅ 测试向量与 node crypto 独立算出的结果一致`);
+    console.log(`     ${service[1]} / ${region[1]} / ${dateStamp[1]} → ${kSigning.slice(0, 16)}…`);
+
+    // 顺带确认 SCSigV4 里那几条 uriEncode 断言的字面量也没写错
+    const uriCases = [
+        ['file/a b+c~d.txt', false, 'file/a%20b%2Bc~d.txt'],
+        ['a/b', true, 'a%2Fb'],
+    ];
+    let uriBad = 0;
+    for (const [input, encodeSlash, want] of uriCases) {
+        if (!src.includes(`"${want}"`)) {
+            console.log(`  ❌ SCSigV4.swift 自检里找不到期望值 "${want}"（输入 ${input}）`);
+            uriBad++;
+        }
+    }
+    if (uriBad === 0) console.log('  ✅ uriEncode 自检断言的字面量齐备');
+
+    return uriBad;
+}
+
+// ===========================================================================
 // main
 // ===========================================================================
 
@@ -276,6 +346,7 @@ function expectFail(label, opts, expectMention) {
 console.log('正例（应当通过）');
 
 failures += checkShellScripts();
+failures += checkSigV4Vector();
 console.log('');
 
 expectPass('完整的包', {});

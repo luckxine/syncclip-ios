@@ -1,4 +1,3 @@
-import Foundation
 import SwiftUI
 import SyncClipCore
 
@@ -6,197 +5,232 @@ struct SettingsView: View {
 
     @EnvironmentObject private var model: AppModel
 
-    // 服务器相关的字段用本地 state，按「保存并应用」才生效。
-    // 不直接双向绑定：否则每敲一个字符都会重建同步循环，既费电又难排查。
-    @State private var baseURL = ""
-    @State private var username = ""
-    @State private var password = ""
-    @State private var pollInterval: Double = 2
-    @State private var startupSync = "pull"
-    @State private var showPassword = false
-    @State private var loaded = false
-
-    private let intervalOptions: [Double] = [1, 2, 3, 5, 10, 30]
+    private static let intervalOptions: [Double] = [1, 2, 3, 5, 10, 30]
 
     var body: some View {
         NavigationView {
-            Form {
-
-                // MARK: 后台常驻
-
-                Section {
-                    Toggle("后台保活", isOn: Binding(
-                        get: { model.settings.keepAliveEnabled },
-                        set: { model.settings.keepAliveEnabled = $0; model.settingsChanged() }
-                    ))
-                    Text("没有越狱就注册不了 launchd 守护进程，所以只能靠持续播放一段听不见的音频，让系统不挂起本 App。关掉的话，退到后台约 30 秒后同步就会停。代价是费电。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } header: {
-                    Text("常驻")
+            ScrollView {
+                VStack(spacing: SCToken.Space.l) {
+                    syncCard
+                    behaviorCard
+                    keepAliveCard
+                    aboutCard
                 }
-
-                // MARK: 同步开关
-
-                Section {
-                    Toggle("启用同步", isOn: Binding(
-                        get: { model.settings.syncEnabled },
-                        set: { model.settings.syncEnabled = $0; model.settingsChanged() }
-                    ))
-                    Toggle("详细日志", isOn: Binding(
-                        get: { model.settings.verboseLogging },
-                        set: { model.settings.verboseLogging = $0; model.settingsChanged() }
-                    ))
-                } header: {
-                    Text("同步")
-                } footer: {
-                    Text("详细日志会把每一轮同步的细节都记下来，排查完建议关掉。")
-                }
-
-                // MARK: 服务器
-
-                Section {
-                    HStack {
-                        Text("地址")
-                        Spacer()
-                        TextField("http://192.168.1.10:5033", text: $baseURL)
-                            .multilineTextAlignment(.trailing)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                    }
-                    HStack {
-                        Text("用户名")
-                        Spacer()
-                        TextField("用户名", text: $username)
-                            .multilineTextAlignment(.trailing)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                    }
-                    HStack {
-                        Text("密码")
-                        Spacer()
-                        if showPassword {
-                            TextField("密码", text: $password)
-                                .multilineTextAlignment(.trailing)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                        } else {
-                            SecureField("密码", text: $password)
-                                .multilineTextAlignment(.trailing)
-                        }
-                        Button {
-                            showPassword.toggle()
-                        } label: {
-                            Image(systemName: showPassword ? "eye.slash" : "eye")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                } header: {
-                    Text("服务器")
-                } footer: {
-                    Text("就是 SyncClipboard.Server 的地址（自建 Docker 那台）。地址要带 http:// 或 https:// 前缀，端口别漏。")
-                }
-
-                // MARK: 同步行为
-
-                Section {
-                    Picker("轮询间隔", selection: $pollInterval) {
-                        ForEach(intervalOptions, id: \.self) { v in
-                            Text(v < 1 ? "\(Int(v * 1000)) 毫秒" : "\(Int(v)) 秒").tag(v)
-                        }
-                    }
-                    Picker("启动时", selection: $startupSync) {
-                        Text("跟随远端（拉取）").tag("pull")
-                        Text("以本地为准（推送）").tag("push")
-                        Text("都不做，只记录").tag("none")
-                    }
-                } header: {
-                    Text("同步行为")
-                } footer: {
-                    Text("「启动时」只影响 App 冷启动后的第一次对齐方向。之后是按内容变化各走各的。")
-                }
-
-                // MARK: 应用
-
-                Section {
-                    Button {
-                        apply()
-                    } label: {
-                        Label("保存并应用", systemImage: "checkmark.circle")
-                    }
-                    Button {
-                        Task { await model.testConnection() }
-                    } label: {
-                        Label("测试连接", systemImage: "antenna.radiowaves.left.and.right")
-                    }
-                }
-
-                // MARK: 关于
-
-                Section {
-                    HStack {
-                        Text("版本")
-                        Spacer()
-                        Text(Self.versionText).foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        Text("Bundle ID")
-                        Spacer()
-                        Text(Bundle.main.bundleIdentifier ?? "-")
-                            .foregroundStyle(.secondary)
-                            .font(.caption)
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("配置文件").font(.footnote)
-                        Text(SCAppSettings.defaultURL.path)
-                            .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                        Text("用 Filza 可以直改这个 JSON。")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                } header: {
-                    Text("关于")
-                }
+                .padding(.horizontal, SCToken.Space.page)
+                .padding(.vertical, SCToken.Space.l)
             }
+            .scPageBackground()
             .navigationTitle("设置")
-            .onAppear(perform: loadFromModel)
         }
         .navigationViewStyle(.stack)
+    }
+
+    // MARK: - 同步
+
+    private var syncCard: some View {
+        SCCard("同步", footnote: model.settings.syncEnabled
+               ? nil
+               : "关掉之后不轮询、不读写剪贴板。这个开关在后台也生效。") {
+            toggleRow(icon: "arrow.triangle.2.circlepath",
+                      tint: SCToken.accent(for: model.settings.activeServer?.type ?? .syncclipboard),
+                      title: "启用同步",
+                      subtitle: model.settings.hasServers
+                          ? nil
+                          : "还没有服务器，开了也不会同步",
+                      isOn: Binding(
+                        get: { model.settings.syncEnabled },
+                        set: { model.settings.syncEnabled = $0; model.settingsChanged() }))
+
+            SCCardDivider()
+
+            VStack(alignment: .leading, spacing: SCToken.Space.s) {
+                Text("轮询间隔")
+                    .font(SCToken.Text.rowSubtitle)
+                    .foregroundColor(SCToken.Palette.label)
+                Text("每 \(Int(model.settings.pollInterval)) 秒检查一次两端有没有变化。"
+                     + "调小更及时但更费电。")
+                    .font(SCToken.Text.caption)
+                    .foregroundColor(SCToken.Palette.secondaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Picker("轮询间隔", selection: Binding(
+                    get: { model.settings.pollInterval },
+                    set: { model.settings.pollInterval = $0; model.settingsChanged() })) {
+                    ForEach(Self.intervalOptions, id: \.self) { v in
+                        Text("\(Int(v)) 秒").tag(v)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            SCCardDivider()
+
+            toggleRow(icon: "text.alignleft",
+                      tint: SCToken.Palette.secondaryLabel,
+                      title: "详细日志",
+                      subtitle: "把每一轮同步的细节都记下来，排查完建议关掉",
+                      isOn: Binding(
+                        get: { model.settings.verboseLogging },
+                        set: { model.settings.verboseLogging = $0; model.settingsChanged() }))
+        }
+    }
+
+    // MARK: - 行为
+
+    private var behaviorCard: some View {
+        SCCard("行为", footnote: "「启动时」只在冷启动后的第一次对齐生效，之后各走各的。") {
+            VStack(alignment: .leading, spacing: SCToken.Space.s) {
+                Text("启动时先做哪个方向")
+                    .font(SCToken.Text.rowSubtitle)
+                    .foregroundColor(SCToken.Palette.label)
+                Picker("启动时", selection: Binding(
+                    get: { model.settings.startupSync },
+                    set: { model.settings.startupSync = $0; model.settingsChanged() })) {
+                    ForEach(SCConfig.StartupSync.allCases) { s in
+                        Text(s.displayName).tag(s.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            SCCardDivider()
+
+            VStack(alignment: .leading, spacing: SCToken.Space.s) {
+                Text("两端同时变了以谁为准")
+                    .font(SCToken.Text.rowSubtitle)
+                    .foregroundColor(SCToken.Palette.label)
+
+                ForEach(SCConflictResolution.allCases) { option in
+                    conflictOption(option)
+                }
+            }
+        }
+    }
+
+    private func conflictOption(_ option: SCConflictResolution) -> some View {
+        let selected = model.settings.conflictResolution == option.rawValue
+        return Button {
+            guard !selected else { return }
+            model.settings.conflictResolution = option.rawValue
+            model.settingsChanged()
+        } label: {
+            HStack(alignment: .top, spacing: SCToken.Space.s) {
+                Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                    .font(.system(size: 15))
+                    .foregroundColor(selected ? .accentColor : SCToken.Palette.tertiaryLabel)
+                    .padding(.top, 1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(option.displayName)
+                        .font(SCToken.Text.rowSubtitle)
+                        .foregroundColor(SCToken.Palette.label)
+                    Text(option.blurb)
+                        .font(SCToken.Text.caption)
+                        .foregroundColor(SCToken.Palette.secondaryLabel)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - 常驻
+
+    private var keepAliveCard: some View {
+        SCCard("常驻", footnote: "没有越狱就注册不了系统服务，所以只能这样让进程活着。"
+               + "关掉的话退到后台约 30 秒后同步就会停。") {
+            toggleRow(icon: "waveform",
+                      tint: SCToken.Palette.warn,
+                      title: "后台保活",
+                      subtitle: "持续播放一段听不见的音频，系统就不会挂起本 App。代价是费电。",
+                      isOn: Binding(
+                        get: { model.settings.keepAliveEnabled },
+                        set: { model.settings.keepAliveEnabled = $0; model.settingsChanged() }))
+
+            if let err = model.keepAliveError {
+                SCCardDivider()
+                HStack(alignment: .top, spacing: SCToken.Space.s) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(SCToken.Palette.bad)
+                    Text(err)
+                        .font(SCToken.Text.caption)
+                        .foregroundColor(SCToken.Palette.secondaryLabel)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    // MARK: - 关于
+
+    private var aboutCard: some View {
+        SCCard("关于") {
+            SCKeyValue(key: "版本", value: Self.versionText)
+            SCKeyValue(key: "Bundle ID", value: Bundle.main.bundleIdentifier ?? "-", mono: true)
+
+            SCCardDivider()
+
+            VStack(alignment: .leading, spacing: SCToken.Space.xs) {
+                Text("配置文件")
+                    .font(SCToken.Text.rowSubtitle)
+                Text(SCAppSettings.defaultURL.path)
+                    .font(SCToken.Text.monoSmall)
+                    .foregroundColor(SCToken.Palette.secondaryLabel)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("是个 JSON，可以用 Filza 直改。改完回 App 会自动生效。")
+                    .font(SCToken.Text.caption)
+                    .foregroundColor(SCToken.Palette.tertiaryLabel)
+            }
+
+            SCCardDivider()
+
+            VStack(alignment: .leading, spacing: SCToken.Space.xs) {
+                Text("URL 快捷动作")
+                    .font(SCToken.Text.rowSubtitle)
+                Text("syncclip://sync   立即同步\n"
+                     + "syncclip://push   推送当前剪贴板\n"
+                     + "syncclip://pull   拉取远端内容")
+                    .font(SCToken.Text.monoSmall)
+                    .foregroundColor(SCToken.Palette.secondaryLabel)
+                    .textSelection(.enabled)
+                Text("配合「设置 → 辅助功能 → 触控 → 轻点背面 → 快捷指令 → 打开 URL」，"
+                     + "就能双击手机背面同步一次，不用打开 App。")
+                    .font(SCToken.Text.caption)
+                    .foregroundColor(SCToken.Palette.tertiaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    // MARK: - 组件
+
+    private func toggleRow(icon: String, tint: Color, title: String,
+                           subtitle: String?, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .top, spacing: SCToken.Space.m) {
+            SCIconLabel(icon: icon, tint: tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(SCToken.Text.rowTitle)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(SCToken.Text.caption)
+                        .foregroundColor(SCToken.Palette.secondaryLabel)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: SCToken.Space.s)
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+        }
     }
 
     private static var versionText: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
         return "\(v) (\(b))"
-    }
-
-    private func loadFromModel() {
-        guard !loaded else { return }
-        loaded = true
-        baseURL = model.settings.baseURL
-        username = model.settings.username
-        password = model.settings.password
-        pollInterval = model.settings.pollInterval
-        startupSync = model.settings.startupSync
-    }
-
-    private func apply() {
-        model.settings.baseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        model.settings.username = username.trimmingCharacters(in: .whitespacesAndNewlines)
-        model.settings.password = password
-        model.settings.pollInterval = pollInterval
-        model.settings.startupSync = startupSync
-        model.settingsChanged()
-
-        do {
-            _ = try model.settings.toConfig()
-            model.toast = "已保存并应用"
-        } catch {
-            model.toast = "已保存，但还不能同步：\(error)"
-        }
     }
 }

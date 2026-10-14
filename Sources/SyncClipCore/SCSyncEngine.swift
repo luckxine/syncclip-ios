@@ -55,9 +55,9 @@ public final class SCSyncEngine {
     /// 已经拉取过的附件缓存：dataName → 完整文本
     private var transferCache: [String: String] = [:]
 
-    public init(config: SCConfig) {
+    public init(config: SCConfig) throws {
         self.config = config
-        self.client = SCClient(config: config)
+        self.client = try SCClient(config: config)
     }
 
     public var startupSync: SCConfig.StartupSync { config.startupSync }
@@ -144,17 +144,8 @@ public final class SCSyncEngine {
 
         // ---- 5. 仲裁 ----
         if localDirty && remoteDirty {
-            // 两边都变了：远端有 syncedAt 且晚于「本地开始脏」的时刻 → 判定远端是后来者，拉取
-            let remoteWins: Bool
-            if let syncedAt = remote.syncedAt,
-               let remoteDate = SCSyncEngine.parseISO(syncedAt),
-               let since = state.localDirtySince {
-                remoteWins = remoteDate > since
-            } else {
-                // 拿不到可信时间戳时保守取远端：宁可本地被覆盖，也不要把服务器上的内容顶掉
-                remoteWins = true
-            }
-            SCLog.info("两端都变了，仲裁：\(remoteWins ? "以远端为准（拉取）" : "以本地为准（推送）")")
+            let remoteWins = resolveConflict(remote: remote)
+            SCLog.info("两端都变了，按「\(config.conflictResolution.displayName)」仲裁：\(remoteWins ? "以远端为准（拉取）" : "以本地为准（推送）"）")
 
             if remoteWins {
                 return await applyRemote(remote, text: remoteText)
@@ -173,6 +164,28 @@ public final class SCSyncEngine {
             return Stats(action: .idle, note: "")
         }
         return await pushLocal(text: text, hash: hash)
+    }
+
+    // MARK: - 冲突仲裁
+
+    /// 两端同时变了，以谁为准。策略来自设置里的「冲突解决」。
+    private func resolveConflict(remote: SCProfile) -> Bool {
+        switch config.conflictResolution {
+        case .local:
+            return false
+        case .remote:
+            return true
+        case .newest:
+            // 比时间戳：远端晚于「本地开始脏」的时刻 → 判远端是后来者
+            if let syncedAt = remote.syncedAt,
+               let remoteDate = SCSyncEngine.parseISO(syncedAt),
+               let since = state.localDirtySince {
+                return remoteDate > since
+            }
+            // 拿不到可信时间戳时保守取远端：宁可本地被覆盖，
+            // 也不要把服务器上已经存在的内容顶掉
+            return true
+        }
     }
 
     // MARK: - 首次对齐
