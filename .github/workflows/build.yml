@@ -9,7 +9,7 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # 纯 node 的静态校验：不需要 Xcode、不需要 Mac，几秒钟就能跑完。
+  # 纯 node 的静态校验：不需要 Xcode、不需要 Mac，几秒就跑完。
   # 放在最前面，代码写坏 / 验包器写空 这类问题在这里就拦掉。
   # ---------------------------------------------------------------------------
   selftest:
@@ -27,10 +27,60 @@ jobs:
         run: node scripts/selftest-pipeline.js
 
   # ---------------------------------------------------------------------------
+  # 工具链冒烟测试：确认「SwiftPM 交叉编译到 iOS」+「ldid 写 entitlement」
+  # 这两件事在这个 runner 上真的成立。
+  #
+  # 为什么要单独一个 job：这两件事是整条链的上游。它们不成立的话，后面的
+  # App 构建只会给出一个含糊的失败；而这里能给出精确的答案 —— 到底是环境问题
+  # 还是我们的代码问题。而且这个 job 只花一分钟，比等 App 构建完再失败划算。
+  # ---------------------------------------------------------------------------
+  toolchain:
+    needs: selftest
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 准备 ldid（带功能冒烟测试）
+        run: bash scripts/setup-ldid.sh
+
+      - name: 验证 SwiftPM 能交叉编译到 iOS
+        run: |
+          set -e
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          mkdir -p /tmp/probe && cd /tmp/probe
+          cat > probe.swift <<'EOF'
+          import Foundation
+          import UIKit
+          print(UIApplication.shared.supportedInterfaceOrientations)
+          EOF
+          swiftc -sdk "$SDK" -target arm64-apple-ios15.0 probe.swift -o probe-ios
+          file probe-ios
+          lipo -archs probe-ios
+
+      - name: 验证 ldid 能把 entitlement 写进二进制并读回
+        run: |
+          set -e
+          cd /tmp/probe
+          cat > probe.entitlements <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>com.apple.Pasteboard.background-access</key><true/>
+          </dict>
+          </plist>
+          EOF
+          ldid -Sprobe.entitlements probe-ios
+          echo "--- 读回的 entitlement："
+          ldid -e probe-ios
+          ldid -e probe-ios | grep -q 'com.apple.Pasteboard.background-access'
+          echo "✅ 交叉编译 + entitlement 签名 都可用"
+
+  # ---------------------------------------------------------------------------
   # iOS App → .ipa（TrollStore 直接装）
   # ---------------------------------------------------------------------------
   app:
-    needs: selftest
+    needs: toolchain
     runs-on: macos-15
     strategy:
       fail-fast: false
@@ -48,41 +98,8 @@ jobs:
           swift --version
           xcrun --sdk iphoneos --show-sdk-path
 
-      # ldid 把 entitlement 写进二进制 —— 这是「读剪贴板不弹提示」的唯一开关。
-      # runner 上通常没有，先从源码构建（要 libplist），失败再退回预编译二进制。
-      - name: 准备 ldid
-        run: |
-          set -e
-          if command -v ldid >/dev/null 2>&1; then
-            echo "runner 已自带 ldid"; ldid -v 2>&1 | head -3 || true; exit 0
-          fi
-
-          built=0
-          if brew install libplist openssl@3 2>/dev/null; then
-            git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid-src || true
-            if [ -d /tmp/ldid-src ]; then
-              if (
-                cd /tmp/ldid-src
-                export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix libplist)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-                make -j"$(sysctl -n hw.ncpu)" \
-                  LIBPLIST_INCLUDES="-I$(brew --prefix libplist)/include -I$(brew --prefix libplist)/include/plist" \
-                  LIBPLIST_LIBS="-L$(brew --prefix libplist)/lib -lplist-2.0" \
-                  LIBCRYPTO_INCLUDES="-I$(brew --prefix openssl@3)/include" \
-                  LIBCRYPTO_LIBS="-L$(brew --prefix openssl@3)/lib -lcrypto"
-              ); then
-                sudo install -m 755 /tmp/ldid-src/ldid /usr/local/bin/ldid
-                built=1
-              fi
-            fi
-          fi
-
-          if [ "$built" != "1" ]; then
-            echo "::warning::源码构建 ldid 失败，改用 rpetrich/ldid 的预编译二进制"
-            curl -fsSL -o /tmp/ldid https://github.com/rpetrich/ldid/raw/master/ldid
-            sudo install -m 755 /tmp/ldid /usr/local/bin/ldid
-          fi
-
-          ldid -v 2>&1 | head -3 || true
+      - name: 准备 ldid（带功能冒烟测试）
+        run: bash scripts/setup-ldid.sh
 
       # build-app.sh 内部会复核签名里的 entitlement、并用 verify-ipa.js 验包
       - name: 构建 App + 签名 + 打 ipa + 验包（${{ matrix.arch }}）
@@ -92,8 +109,7 @@ jobs:
         run: |
           set -e
           for f in dist/SyncClipboard_*.ipa; do
-            base="${f%.ipa}"
-            mv "$f" "${base}_${{ matrix.arch }}.ipa"
+            mv "$f" "${f%.ipa}_${{ matrix.arch }}.ipa"
           done
           ls -l dist/
 
@@ -107,7 +123,7 @@ jobs:
   # 越狱守护进程 → .deb（当前用不上，保留；将来若越狱可直接用）
   # ---------------------------------------------------------------------------
   daemon:
-    needs: selftest
+    needs: toolchain
     runs-on: macos-15
     strategy:
       fail-fast: false
@@ -117,32 +133,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 准备 ldid
-        run: |
-          set -e
-          if command -v ldid >/dev/null 2>&1; then exit 0; fi
-          built=0
-          if brew install libplist openssl@3 2>/dev/null; then
-            git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid-src || true
-            if [ -d /tmp/ldid-src ]; then
-              if (
-                cd /tmp/ldid-src
-                export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix libplist)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-                make -j"$(sysctl -n hw.ncpu)" \
-                  LIBPLIST_INCLUDES="-I$(brew --prefix libplist)/include -I$(brew --prefix libplist)/include/plist" \
-                  LIBPLIST_LIBS="-L$(brew --prefix libplist)/lib -lplist-2.0" \
-                  LIBCRYPTO_INCLUDES="-I$(brew --prefix openssl@3)/include" \
-                  LIBCRYPTO_LIBS="-L$(brew --prefix openssl@3)/lib -lcrypto"
-              ); then
-                sudo install -m 755 /tmp/ldid-src/ldid /usr/local/bin/ldid
-                built=1
-              fi
-            fi
-          fi
-          if [ "$built" != "1" ]; then
-            curl -fsSL -o /tmp/ldid https://github.com/rpetrich/ldid/raw/master/ldid
-            sudo install -m 755 /tmp/ldid /usr/local/bin/ldid
-          fi
+      - name: 准备 ldid（带功能冒烟测试）
+        run: bash scripts/setup-ldid.sh
 
       - name: 构建守护进程 + 签名 + 打 deb + 验包（${{ matrix.arch }}）
         run: bash scripts/build.sh ${{ matrix.arch }}

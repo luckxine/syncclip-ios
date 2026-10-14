@@ -9,6 +9,10 @@
 // 所以这里造一个**带真实签名段结构**的合成 Mach-O（SuperBlob + entitlements
 // blob，字节序和偏移都按规范来），先确认正例能过，再逐个注入缺陷确认能报出来。
 // 只有正例过 + 反例不过，这个校验才算可信。
+//
+// 顺带把 shell 脚本也扫一遍：开发机是 Windows，脚本若被 checkout 成 CRLF，
+// macOS runner 上会直接 "bad interpreter: /bin/bash^M"。这类问题在 CI 上
+// 表现为莫名其妙的失败，在这里几毫秒就能抳住。
 
 const fs = require('fs');
 const path = require('path');
@@ -188,6 +192,47 @@ function pipeline(appDir, ipaPath) {
 }
 
 // ===========================================================================
+// shell 脚本体检：CRLF、shebang、可执行位（用 git 的 index 而不是工作区，
+// 因为 CI 上 checkout 出来的才是真正要跑的东西）
+// ===========================================================================
+
+function checkShellScripts() {
+    console.log('[shell 脚本]');
+    let bad = 0;
+
+    const tracked = execFileSync('git', ['ls-files', '*.sh'], { cwd: ROOT, encoding: 'utf8' })
+        .split('\n').filter(Boolean);
+
+    if (tracked.length === 0) {
+        console.log('  ⚠️  git ls-files 没列出 *.sh（不在 git 仓库里？）');
+        return 0;
+    }
+
+    for (const f of tracked) {
+        // git cat-file 给出的才是真正会被 checkout 的字节
+        const content = execFileSync('git', ['cat-file', 'blob', `HEAD:${f}`],
+                                     { cwd: ROOT, maxBuffer: 16 * 1024 * 1024 });
+
+        const hasCR = content.includes(0x0d);
+        if (hasCR) {
+            console.log(`  ❌ ${f}：含 CR 字节。macOS 上会 bad interpreter，检查 .gitattributes`);
+            bad++;
+        }
+
+        const firstLine = content.slice(0, content.indexOf(0x0a)).toString('utf8');
+        if (!firstLine.startsWith('#!')) {
+            console.log(`  ❌ ${f}：缺少 shebang`);
+            bad++;
+        } else if (!firstLine.includes('/bin/bash') && !firstLine.includes('/bin/sh')) {
+            console.log(`  ⚠️  ${f}：shebang 是 ${firstLine}`);
+        }
+    }
+
+    if (bad === 0) console.log(`  ✅ ${tracked.length} 个脚本：换行符与 shebang 都正常`);
+    return bad;
+}
+
+// ===========================================================================
 // main
 // ===========================================================================
 
@@ -229,6 +274,9 @@ function expectFail(label, opts, expectMention) {
 }
 
 console.log('正例（应当通过）');
+
+failures += checkShellScripts();
+console.log('');
 
 expectPass('完整的包', {});
 
