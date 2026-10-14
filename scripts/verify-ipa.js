@@ -389,27 +389,39 @@ function parseMachO(data) {
     }
     if (xml === null) throw new Error('签名里没有 entitlement 段');
 
-    // LC_MAIN 的 entryoff 是**文件偏移**，要换算成 vmaddr 才能去符号表里找名字。
-    let entryName = null;
-    const symCount = nsyms;
-    if (entryoff !== null && textVmaddr !== null && nsyms) {
-        const target = textVmaddr + (entryoff - textFileoff);
-        for (let i = 0; i < nsyms; i++) {
-            const o = symoff + i * 16;
-            if (o + 16 > data.length) break;
-            const strx = data.readUInt32LE(o);
-            const value = data.readBigUInt64LE(o + 8);
-            if (value !== target) continue;
-            if (!strx) continue;
-            const s = stroff + strx;
-            if (s >= data.length) continue;
-            const e = data.indexOf(0, s);
-            entryName = data.slice(s, e === -1 ? undefined : e).toString('utf8');
-            break;
-        }
+    // LC_MAIN 的 entryoff 是**文件偏移**，换算成 vmaddr 便于和符号表对照。
+    //
+    // 注意一个反直觉的事实：真实二进制里入口地址上通常**没有**符号 ——
+    // ld64 在那儿放的是它自己生成的 thunk。实证：EasyTier 那个在 App Store 上
+    // 跑得好好的 appex，entryoff 换算出的地址上没有任何符号，
+    // _NSExtensionMain 只以**未定义符号**（n_type=1, n_value=0）形式存在。
+    //
+    // 所以这里不做「地址→名字」的匹配，只把符号表与入口地址交出去，
+    // 由调用方按「引用了谁」和「入口是不是 _main」判断。
+    let entryVmaddr = null;
+    if (entryoff !== null && textVmaddr !== null) {
+        entryVmaddr = textVmaddr + (entryoff - textFileoff);
     }
 
-    return { cputype, xml, entryoff, entryName, symCount };
+    const symbols = [];
+    for (let i = 0; i < nsyms; i++) {
+        const o = symoff + i * 16;
+        if (o + 16 > data.length) break;
+        const strx = data.readUInt32LE(o);
+        const ntype = data.readUInt8(o + 4);
+        const value = data.readBigUInt64LE(o + 8);
+        if (!strx) continue;
+        const s = stroff + strx;
+        if (s >= data.length) continue;
+        const e = data.indexOf(0, s);
+        symbols.push({
+            name: data.slice(s, e === -1 ? undefined : e).toString('utf8'),
+            value,
+            isSect: (ntype & 0x0e) !== 0,
+        });
+    }
+
+    return { cputype, xml, entryoff, entryVmaddr, symbols, symCount: nsyms };
 }
 
 function entitlementCheck(parsed, required, label) {
@@ -495,12 +507,24 @@ if (profile.appex) {
             if (!parsed.symCount) {
                 check(false, 'appex 入口点是 _NSExtensionMain',
                       '符号表是空的，验不了（不要用 strip 构建）');
-            } else if (parsed.entryName === null) {
-                check(false, 'appex 入口点是 _NSExtensionMain',
-                      'LC_MAIN 指向的地址在符号表里找不到对应符号');
             } else {
-                check(parsed.entryName.replace(/^_+/, '').startsWith('NSExtensionMain'),
-                      'appex 入口点是 _NSExtensionMain', `实际：${parsed.entryName}`);
+                const imported = parsed.symbols.find(
+                    (s) => s.name.replace(/^_+/, '') === 'NSExtensionMain' && !s.isSect);
+                const mainSym = parsed.symbols.find((s) => s.name === '_main' && s.isSect);
+                const entryIsMain = !!(mainSym && parsed.entryVmaddr !== null
+                                       && mainSym.value === parsed.entryVmaddr);
+                const atEntry = parsed.entryVmaddr === null ? [] : parsed.symbols.filter(
+                    (s) => s.isSect && s.value === parsed.entryVmaddr);
+
+                check(!!imported,
+                      'appex 把 _NSExtensionMain 当外部符号引用（说明链接器的 -e 生效了）',
+                      imported ? '未定义符号' : '符号表里没有它');
+                check(!entryIsMain,
+                      'LC_MAIN 没有指向 _main（指向它就说明 -e 没生效，跑的是 main.swift）',
+                      entryIsMain ? 'LC_MAIN 就指着 _main'
+                                  : (atEntry.length
+                                      ? '入口地址上有符号：' + atEntry.map((s) => s.name).join(',')
+                                      : '入口地址上没有符号 —— 真实二进制就是这样'));
             }
         } catch (err) {
             check(false, 'appex 二进制解析', err.message);

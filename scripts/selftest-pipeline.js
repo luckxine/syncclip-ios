@@ -37,15 +37,22 @@ const LC_MAIN = 0x80000028;
 const SUPERBLOB_MAGIC = 0xfade0cc0;
 const ENTITLEMENTS_MAGIC = 0xfade7171;
 
-// 除了签名，还得造出 __TEXT 段、符号表和 LC_MAIN：verify-ipa.js 里有一条检查是
-// 「appex 的 LC_MAIN 指向的符号是不是 _NSExtensionMain」，合成二进制里没有这些结构
-// 的话，那条检查就永远只会「因为找不到符号而失败」，验不出它会不会误判。
+// 除了签名，还得造出 __TEXT 段、符号表和 LC_MAIN —— verify-ipa.js 里要验
+// 「appex 的入口点是不是 _NSExtensionMain」，而这件事在真实二进制里的形状很反直觉。
 //
-// opts: cputype / entrySymbol（默认 _NSExtensionMain）/ withMain（false=不写 LC_MAIN）
+// 实证（EasyTier 那个在 App Store 上跑得好好的 appex）：
+//   LC_MAIN 指向的地址上**一个符号都没有**（那是 ld64 自己生成的 thunk），
+//   _NSExtensionMain 只以**未定义符号**存在（n_type=1, n_value=0）。
+//
+// 所以判据不能是「地址上有符号」，只能是「引用了 _NSExtensionMain」
+// +「入口不是 _main」。合成二进制必须照真实形状造，
+// 否则那条检查要么永远假红、要么永远假绿。
+//
+// opts: cputype / withMain / entryMode（'import' 默认=-e 生效 | 'main'=-e 没生效）
 function buildMachO(entitlementsXml, opts = {}) {
     const cputype = opts.cputype === undefined ? 0x0100000c : opts.cputype;
     const withMain = opts.withMain !== false;
-    const entrySymbol = opts.entrySymbol === undefined ? '_NSExtensionMain' : opts.entrySymbol;
+    const entryMode = opts.entryMode || 'import';
     const signed = entitlementsXml !== '';
 
     const xml = Buffer.from(entitlementsXml, 'utf8');
@@ -60,16 +67,29 @@ function buildMachO(entitlementsXml, opts = {}) {
     const ncmds = 3 + (withMain ? 1 : 0) + (signed ? 1 : 0);
     const cmdsSize = segCmdSize + symtabCmdSize + mainCmdSize + sigCmdSize;
 
+    const codeSize = 32;                      // 入口 thunk 与「_main」各占一段
     const codeOff = headerSize + cmdsSize;
-    const symOff = codeOff + 16;
+    const mainOff = codeOff + 16;
+    const entryOff = entryMode === 'main' ? mainOff : codeOff;
 
-    const symbols = entrySymbol ? [entrySymbol] : [];
+    // 符号表（照真实形状造）：
+    //   import：_NSExtensionMain 未定义（value=0）+ _main 已定义在另一处
+    //   main  ：只有 _main 已定义，且入口就指向它（= -e 没生效）
+    const symbols = [];
+    if (entryMode === 'import') {
+        symbols.push({ name: '_NSExtensionMain', sect: false, off: 0 });
+        symbols.push({ name: '_main', sect: true, off: mainOff });
+    } else if (entryMode === 'main') {
+        symbols.push({ name: '_main', sect: true, off: mainOff });
+    }
+
+    const symOff = codeOff + codeSize;
     const strOff = symOff + symbols.length * 16;
     let strTab = Buffer.from([0]);
     const strIndexes = [];
-    for (const name of symbols) {
+    for (const s of symbols) {
         strIndexes.push(strTab.length);
-        strTab = Buffer.concat([strTab, Buffer.from(name + '\0', 'utf8')]);
+        strTab = Buffer.concat([strTab, Buffer.from(s.name + '\0', 'utf8')]);
     }
 
     const sigOff = strOff + strTab.length;
@@ -116,7 +136,7 @@ function buildMachO(entitlementsXml, opts = {}) {
     if (withMain) {
         out.writeUInt32LE(LC_MAIN, off);
         out.writeUInt32LE(mainCmdSize, off + 4);
-        out.writeBigUInt64LE(BigInt(codeOff), off + 8);
+        out.writeBigUInt64LE(BigInt(entryOff), off + 8);
         out.writeBigUInt64LE(0n, off + 16);
         off += mainCmdSize;
     }
@@ -129,14 +149,14 @@ function buildMachO(entitlementsXml, opts = {}) {
         out.writeUInt32LE(superLen, off + 12);
     }
 
-    // 符号表：入口符号的地址就是 __TEXT.vmaddr + codeOff
-    symbols.forEach((name, i) => {
+    // 符号表：N_UNDF|N_EXT(0x01) = 未定义（像外部框架里的函数）；N_SECT|N_EXT(0x0f) = 本段已定义
+    symbols.forEach((s, i) => {
         const o = symOff + i * 16;
         out.writeUInt32LE(strIndexes[i], o);
-        out.writeUInt8(0x0f, o + 4);                     // N_SECT | N_EXT
-        out.writeUInt8(1, o + 5);                        // n_sect
+        out.writeUInt8(s.sect ? 0x0f : 0x01, o + 4);
+        out.writeUInt8(s.sect ? 1 : 0, o + 5);          // n_sect
         out.writeUInt16LE(0, o + 6);
-        out.writeBigUInt64LE(TEXT_VMADDR + BigInt(codeOff), o + 8);
+        out.writeBigUInt64LE(s.sect ? TEXT_VMADDR + BigInt(s.off) : 0n, o + 8);
     });
     strTab.copy(out, strOff);
 
@@ -680,8 +700,10 @@ expectProbePass('完整的探针包（含 appex 入口点检查）', {});
 expectProbePass('appex 源文件权限 0644 → 打包器归一化为 0755', { appexExecMode: 0o644 });
 
 // 入口点没接上（链接器的 -e 没生效）—— appex 会「静默什么都不做」
-expectProbeFail('appex 入口点不是 _NSExtensionMain',
-    { appexMacho: { entrySymbol: '_main' } }, '实际：_main');
+expectProbeFail('appex 入口点不是 _NSExtensionMain（-e 没生效）',
+    { appexMacho: { entryMode: 'main' } }, 'LC_MAIN 就指着 _main');
+expectProbeFail('appex 符号表是空的（strip 过）',
+    { appexMacho: { entryMode: 'none' } }, '符号表是空的');
 
 // appex 缺网络扩展 entitlement —— 隧道建不起来
 expectProbeFail('appex 缺 networkextension entitlement',
