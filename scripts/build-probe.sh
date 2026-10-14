@@ -126,11 +126,11 @@ if [ "$SIGN" = "1" ]; then
         exit 1
     fi
 
-    echo "==> ldid 签名 appex（$TUNNEL_ENT）"
+    echo "==> ldid 签名 appex（${TUNNEL_ENT}）"
     ldid -S"$TUNNEL_ENT" "$APPEX/$TUNNEL_NAME"
     TUNNEL_ENT_OUT="$(ldid -e "$APPEX/$TUNNEL_NAME")"
 
-    echo "==> ldid 签名宿主 App（$APP_ENT）"
+    echo "==> ldid 签名宿主 App（${APP_ENT}）"
     ldid -S"$APP_ENT" "$APP/$APP_NAME"
     APP_ENT_OUT="$(ldid -e "$APP/$APP_NAME")"
 
@@ -168,7 +168,7 @@ if ! nm -u "$APPEX/$TUNNEL_NAME" | grep -q '_NSExtensionMain'; then
     echo "!! appex 没有引用 _NSExtensionMain —— 入口点没被接上" >&2
     exit 1
 fi
-echo "    LC_MAIN entryoff=$ENTRY，且引用了 _NSExtensionMain"
+echo "    LC_MAIN entryoff=${ENTRY}，且引用了 _NSExtensionMain"
 
 # ---- 打 ipa 并验包 ----
 IPA="dist/PasteProbe_${VERSION}_${ARCH}.ipa"

@@ -458,6 +458,22 @@ function checkShellScripts() {
         } else if (!firstLine.includes('/bin/bash') && !firstLine.includes('/bin/sh')) {
             console.log(`  ⚠️  ${f}：shebang 是 ${firstLine}`);
         }
+
+        // $VAR 后面紧跟非 ASCII 字符（中文全角括号、顿号等）时，bash 会把那个字节
+        // 当成变量名的一部分 —— 报的是 "TUNNEL_ENT?: unbound variable"，
+        // 错误信息里变量名带一个替换字符，很难看出问题是标点。
+        // 这个坑只在「中文 echo 里直接跟变量」时出现，而且只在真跑脚本时才炸，
+        // 本地看几遍都看不出来。所以在这里抓。
+        const lines = content.toString('utf8').split('\n');
+        for (let i = 0; i < lines.length; i++) {
+            const m = lines[i].match(/\$[A-Za-z_][A-Za-z0-9_]*[\u0080-\uffff]/);
+            if (m) {
+                const name = m[0].slice(1, -1);
+                console.log(`  ❌ ${f}:${i + 1}：变量 ${name} 后面紧跟非 ASCII 字符`);
+                console.log(`       写成美元符加大括号：\${${name}}`);
+                bad++;
+            }
+        }
     }
 
     if (bad === 0) console.log(`  ✅ ${tracked.length} 个脚本：换行符与 shebang 都正常`);
