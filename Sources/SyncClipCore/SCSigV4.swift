@@ -53,13 +53,11 @@ public enum SCSigV4 {
     /// 它会把 `+`、`@`、`:` 等留给上层解释，而 SigV4 要求这些也必须编码，
     /// 否则签名和服务器算出来的不一致。
     public static func uriEncode(_ input: String, encodeSlash: Bool) -> String {
-        let unreserved = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~")
         var out = ""
         out.reserveCapacity(input.utf8.count)
         for byte in input.utf8 {
-            let scalar = Character(UnicodeScalar(byte))
-            if unreserved.contains(scalar) {
-                out.append(scalar)
+            if isUnreserved(byte) {
+                out.append(Character(UnicodeScalar(byte)))
             } else if byte == UInt8(ascii: "/") && !encodeSlash {
                 out.append("/")
             } else {
@@ -69,16 +67,43 @@ public enum SCSigV4 {
         return out
     }
 
+    /// 用字节区间判断而不是 Set<Character>：
+    /// 后者要拿一个长字面量构造集合，类型检查会明显变慢（实测能让编译器报
+    /// “unable to type-check this expression in reasonable time”）。
+    private static func isUnreserved(_ byte: UInt8) -> Bool {
+        switch byte {
+        case UInt8(ascii: "A")...UInt8(ascii: "Z"),
+             UInt8(ascii: "a")...UInt8(ascii: "z"),
+             UInt8(ascii: "0")...UInt8(ascii: "9"),
+             UInt8(ascii: "-"), UInt8(ascii: "_"),
+             UInt8(ascii: "."), UInt8(ascii: "~"):
+            return true
+        default:
+            return false
+        }
+    }
+
     // MARK: - 规范化
 
     /// 规范化查询串：按参数名（再按值）排序，键值都做 UriEncode。
     /// 入参是**未编码**的键值对，避免二次编码。
+    ///
+    /// 刻意拆成几步：链式 map/sorted/map 一棵表达式会让类型检查超时。
     public static func canonicalQueryString(_ params: [(String, String)]) -> String {
-        params
-            .map { (uriEncode($0.0, encodeSlash: true), uriEncode($0.1, encodeSlash: true)) }
-            .sorted { a, b in a.0 == b.0 ? a.1 < b.1 : a.0 < b.0 }
-            .map { "\($0.0)=\($0.1)" }
-            .joined(separator: "&")
+        let encoded: [(key: String, value: String)] = params.map { pair in
+            (key: uriEncode(pair.0, encodeSlash: true),
+             value: uriEncode(pair.1, encodeSlash: true))
+        }
+
+        let sorted = encoded.sorted { lhs, rhs in
+            if lhs.key != rhs.key { return lhs.key < rhs.key }
+            return lhs.value < rhs.value
+        }
+
+        let parts: [String] = sorted.map { item in
+            item.key + "=" + item.value
+        }
+        return parts.joined(separator: "&")
     }
 
     /// 规范化头部：键名小写、按字典序排列，值去掉首尾空白

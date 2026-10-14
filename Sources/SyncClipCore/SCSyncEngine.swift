@@ -145,7 +145,8 @@ public final class SCSyncEngine {
         // ---- 5. 仲裁 ----
         if localDirty && remoteDirty {
             let remoteWins = resolveConflict(remote: remote)
-            SCLog.info("两端都变了，按「\(config.conflictResolution.displayName)」仲裁：\(remoteWins ? "以远端为准（拉取）" : "以本地为准（推送）"）")
+            SCLog.info("两端都变了，按「\(config.conflictResolution.displayName)」仲裁："
+                       + (remoteWins ? "以远端为准（拉取）" : "以本地为准（推送）"))
 
             if remoteWins {
                 return await applyRemote(remote, text: remoteText)
@@ -319,7 +320,7 @@ public final class SCSyncEngine {
         try await client.fetchProfile()
     }
 
-    public func probeServer() async -> SCClient.ServerInfo {
+    public func probeServer() async -> SCProbeResult {
         await client.probeServer()
     }
 

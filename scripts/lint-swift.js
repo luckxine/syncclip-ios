@@ -90,6 +90,149 @@ function strip(src) {
     return out.join('');
 }
 
+/// 真正的词法体检：按 Swift 的字符串/插值规则扫一遍。
+///
+/// 为什么要这么较真：`strip()` 遇到未闭合的字符串就 break 掉，
+/// 导致后面的括号根本没被计入 —— 而这类错误的结果往往是一个余下的
+/// 全角 `）` 顶替了本应闭合插值的 ASCII `)`。这种错误括号计数看起来是平的，
+/// 本地完全看不出来，CI 上才报 “cannot find ')' to match opening '('”。
+///
+/// 这里用一个带状态机的小扫描器，把三种情况变成可报的：
+///   1. 单行字符串在换行前没闭合
+///   2. 字符串插值 `\(` 没被 ASCII `)` 闭合
+///   3. 插值里跨行（单行字符串里不允许）
+function lexCheck(src) {
+    const problems = [];
+    let line = 1;
+    let i = 0;
+    let mode = 'code';              // code | string | multiline
+    let stringStartLine = 1;
+    const brackets = [];            // 括号栈，存 { char, line }
+    const interps = [];             // 未闭合的插值：{ depth, returnMode, line }
+
+    const pairOf = { ')': '(', ']': '[', '}': '{' };
+
+    while (i < src.length) {
+        const c = src[i];
+
+        if (mode === 'multiline') {
+            if (c === '\n') line++;
+            // 多行字符串里也能插值
+            if (c === '\\' && src[i + 1] === '(') {
+                interps.push({ depth: brackets.length, returnMode: 'multiline', line });
+                mode = 'code';
+                i += 2;
+                continue;
+            }
+            if (src.startsWith('"""', i)) { mode = 'code'; i += 3; continue; }
+            i++;
+            continue;
+        }
+
+        if (mode === 'string') {
+            // 先把插值挑出来：`\\(` 不能被当成普通转义符对儿跳过，
+            // 否则插值永远不会被识别，整个后面的扫描就全错了。
+            if (c === '\\' && src[i + 1] === '(') {
+                interps.push({ depth: brackets.length, returnMode: 'string', line });
+                mode = 'code';
+                i += 2;
+                continue;
+            }
+            if (c === '\\') { i += 2; continue; }         // 普通转义
+            if (c === '"') { mode = 'code'; i++; continue; }
+            if (c === '\n') {
+                problems.push(`第 ${stringStartLine} 行的字符串字面量没有闭合`);
+                mode = 'code';
+                continue;                                   // 不消费换行，让外层处理
+            }
+            i++;
+            continue;
+        }
+
+        // ---- code 模式 ----
+        if (c === '/' && src[i + 1] === '/') {
+            while (i < src.length && src[i] !== '\n') i++;
+            continue;
+        }
+        if (c === '/' && src[i + 1] === '*') {
+            let depth = 1;
+            i += 2;
+            while (i < src.length && depth > 0) {
+                if (src[i] === '\n') line++;
+                if (src.startsWith('/*', i)) { depth++; i += 2; continue; }
+                if (src.startsWith('*/', i)) { depth--; i += 2; continue; }
+                i++;
+            }
+            continue;
+        }
+        if (src.startsWith('"""', i)) { mode = 'multiline'; i += 3; continue; }
+        if (c === '"') { mode = 'string'; stringStartLine = line; i++; continue; }
+
+        if (c === '(' || c === '[' || c === '{') {
+            brackets.push({ char: c, line });
+            i++;
+            continue;
+        }
+
+        if (c === ')' || c === ']' || c === '}') {
+            // 这个 ')' 是否恰好关掉一个未闭合的插值？
+            //
+            // 注意：插值的开头 `\(` 并没有入括号栈（开头的 `(` 是跟 `\` 一起
+            // 被消掉的），所以这个 `)` **不能**再去弹括号栈 ——
+            // 它只负责闭合插值。少写这个 continue 会让栈整体错位，
+            // 之后整篇文件都报“括号不配对”。
+            if (c === ')' && interps.length > 0 &&
+                interps[interps.length - 1].depth === brackets.length) {
+                mode = interps.pop().returnMode;   // 回到它所在的那个字符串里
+                i++;
+                continue;
+            }
+
+            const top = brackets.pop();
+            if (!top) {
+                problems.push(`第 ${line} 行多了一个 '${c}'`);
+            } else if (top.char !== pairOf[c]) {
+                problems.push(`第 ${line} 行的 '${c}' 与第 ${top.line} 行的 '${top.char}' 不配对`);
+            }
+            i++;
+            continue;
+        }
+
+        if (c === '\n') {
+            line++;
+            // 插值里跨行：单行字符串中不允许（多行字符串里的插值可以）
+            // 每个帧只报一次，否则后面每一行都会重复刷屏
+            for (const frame of interps) {
+                if (frame.returnMode === 'string' && frame.line < line && !frame.reported) {
+                    frame.reported = true;
+                    problems.push(
+                        `第 ${frame.line} 行的字符串插值 \\( 到行尾都没被 ASCII ')' 闭合`
+                        + `（常见原因：误用了全角 '）'）`);
+                }
+            }
+            i++;
+            continue;
+        }
+
+        i++;
+    }
+
+    if (mode === 'string') {
+        problems.push(`第 ${stringStartLine} 行的字符串字面量到文件尾都没闭合`);
+    }
+    if (mode === 'multiline') {
+        problems.push('多行字符串字面量 """ 到文件尾都没闭合');
+    }
+    for (const frame of interps) {
+        problems.push(`第 ${frame.line} 行的插值 \\( 到文件尾都没被 ')' 闭合`);
+    }
+    for (const b of brackets) {
+        problems.push(`第 ${b.line} 行的 '${b.char}' 到文件尾都没闭合`);
+    }
+
+    return problems;
+}
+
 /// 找出「同一 switch 的多个 case 里重复声明同名变量」
 function findSwitchCaseCollisions(clean, problems) {
     const lines = clean.split('\n');
@@ -146,6 +289,51 @@ function findSwitchCaseCollisions(clean, problems) {
             stack.pop();
         }
     });
+}
+
+/// 系统框架的符号 → 必须直接 import 的模块。
+///
+/// 只列会真实踩坑的：UIKit 的符号不能指望 SwiftUI 帮忙转出，
+/// 漏了 import UIKit 就只有到 CI 上才发现。
+const SYSTEM_MODULES = [
+    {
+        module: 'UIKit',
+        // SwiftUI 不保证转出这些，所以要求直接 import UIKit
+        reexportedBy: [],
+        symbols: ['UIColor', 'UIImage', 'UIApplication', 'UIKeyboardType', 'UIPasteboard',
+                  'UIView', 'UIScreen', 'UIFont', 'UIDevice', 'UIScene', 'UIInterfaceOrientation',
+                  'UIAlertController', 'UIViewController'],
+    },
+    {
+        module: 'Foundation',
+        // SwiftUI 与 UIKit 都会转出 Foundation，所以有其中之一也算数
+        reexportedBy: ['SwiftUI', 'UIKit'],
+        symbols: ['Bundle', 'FileManager', 'URLComponents', 'URLRequest', 'URLSession',
+                  'JSONDecoder', 'JSONEncoder', 'DateFormatter', 'ISO8601DateFormatter',
+                  'NotificationCenter', 'UserDefaults', 'RelativeDateTimeFormatter',
+                  'PropertyListSerialization', 'UUID', 'CommandLine', 'ProcessInfo'],
+    },
+];
+
+/// 找出「用了系统框架的符号但没 import 对应模块」
+function findMissingSystemImports(clean, problems) {
+    const imports = new Set();
+    for (const m of clean.matchAll(/^\s*import\s+([A-Za-z_][A-Za-z0-9_]*)/gm)) {
+        imports.add(m[1]);
+    }
+
+    const body = clean.replace(/^\s*import\s+.*$/gm, '');
+
+    for (const entry of SYSTEM_MODULES) {
+        if (imports.has(entry.module)) continue;
+        if (entry.reexportedBy.some((m) => imports.has(m))) continue;
+        for (const symbol of entry.symbols) {
+            if (new RegExp(`\\b${symbol}\\b`).test(body)) {
+                problems.push(`使用了 ${entry.module} 的 ${symbol}，但没有 \`import ${entry.module}\``);
+                break;   // 每个模块只报一次，免得刷屏
+            }
+        }
+    }
 }
 
 /// 从文件路径推断它属于哪个 target（相对 INDEX_ROOT 的第一层目录名）
@@ -271,11 +459,17 @@ for (const file of allFiles) {
         }
     }
 
-    // 4. switch case 重名
+    // 4. 字符串/插值/括号的词法体检（能抓到全角括号顶替 ASCII 括号这类问题）
+    problems.push(...lexCheck(src));
+
+    // 5. switch case 重名
     findSwitchCaseCollisions(clean, problems);
 
     // 5. 用了别的模块的符号却没 import
     findMissingImports(file, clean, symbolIndex, problems);
+
+    // 6. 用了系统框架的符号却没 import 对应模块
+    findMissingSystemImports(clean, problems);
 
     if (problems.length > 0) {
         failures += problems.length;

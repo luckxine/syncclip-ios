@@ -55,16 +55,24 @@ public struct SCAppSettings: Codable, Equatable {
         // ---- 老版本配置迁移 ----
         // 早期版本只有一台服务器，字段平铺在顶层（baseURL/username/password/…）。
         // 见到那种形状就自动收编成一条服务器记录，用户不必重新填一遍。
+        //
+        // 这几个 key 只在迁移时读一次，所以单独放一个 CodingKeys 里 ——
+        // 不宜混进主 CodingKeys：合成出来的 encode 也会用到它，
+        // 而它们已经没有对应属性了，两边对不上会直接编译不过。
         if servers.isEmpty {
-            let legacyURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
+            enum LegacyKeys: String, CodingKey {
+                case baseURL, username, password, name
+            }
+            let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+            let legacyURL = try legacy.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
             if !legacyURL.isEmpty {
                 var migrated = SCServerProfile(
                     type: .syncclipboard,
                     url: legacyURL,
-                    username: try c.decodeIfPresent(String.self, forKey: .username) ?? "",
-                    password: try c.decodeIfPresent(String.self, forKey: .password) ?? ""
+                    username: try legacy.decodeIfPresent(String.self, forKey: .username) ?? "",
+                    password: try legacy.decodeIfPresent(String.self, forKey: .password) ?? ""
                 )
-                migrated.name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+                migrated.name = try legacy.decodeIfPresent(String.self, forKey: .name) ?? ""
                 servers = [migrated]
                 activeServerID = migrated.id
             }
