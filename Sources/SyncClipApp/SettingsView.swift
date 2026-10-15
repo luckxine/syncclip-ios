@@ -65,6 +65,33 @@ struct SettingsView: View {
 
             SCCardDivider()
 
+            toggleRow(icon: "bolt.horizontal.circle",
+                      tint: SCToken.accent(for: model.settings.activeServer?.type ?? .syncclipboard),
+                      title: "接收实时推送",
+                      subtitle: model.settings.activeServer?.type == .syncclipboard
+                          ? "服务器一变就立刻同步，不用等下一轮（连着的时候轮询自动退到 30 秒当保险丝）"
+                          : "当前是 \(model.settings.activeServer?.type.displayName ?? "没选服务器")，没有推送通道",
+                      isOn: Binding(
+                        get: { model.settings.pushEnabled },
+                        set: { model.settings.pushEnabled = $0; model.settingsChanged() }))
+
+            if model.settings.pushEnabled && model.settings.syncEnabled {
+                SCCardDivider()
+                HStack(spacing: SCToken.Space.s) {
+                    Circle()
+                        .fill(model.pushState == "已连接"
+                              ? SCToken.Palette.ok
+                              : (model.pushState == "未启动" || model.pushState == "此服务器类型不支持"
+                                 ? SCToken.Palette.tertiaryLabel : SCToken.Palette.warn))
+                        .frame(width: 8, height: 8)
+                    Text("推送通道：\(model.pushState)\(model.pushEventCount > 0 ? " · 已收到 \(model.pushEventCount) 次" : "")")
+                        .font(SCToken.Text.caption)
+                        .foregroundColor(SCToken.Palette.secondaryLabel)
+                }
+            }
+
+            SCCardDivider()
+
             toggleRow(icon: "text.alignleft",
                       tint: SCToken.Palette.secondaryLabel,
                       title: "详细日志",

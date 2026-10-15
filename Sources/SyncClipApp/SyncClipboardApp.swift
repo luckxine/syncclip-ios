@@ -16,9 +16,16 @@ struct SyncClipboardApp: App {
                 .onAppear { model.bootstrap() }
         }
         .onChange(of: scenePhase) { phase in
-            // 回到前台时补一轮：后台保活万一被系统掐了，回前台立刻追上进度
-            if phase == .active {
+            switch phase {
+            case .active:
+                // 回到前台：长连接大概已经被系统掐了，先接回来再补一轮
+                model.enterForeground()
                 Task { await model.syncNow(silent: true) }
+            case .background:
+                // 进后台的瞬间就要排下一次 BGTask —— 等被杀之后再排就来不及了
+                model.enterBackground()
+            default:
+                break
             }
         }
     }

@@ -16,6 +16,7 @@ struct DiagnosticsView: View {
                     foundationCard
                     checksCard
                     keepAliveCard
+                    pushCard
                     pasteboardCard
                     endpointCard
                     logCard
@@ -162,6 +163,19 @@ struct DiagnosticsView: View {
                        tint: model.maxTickGap == 0
                             ? SCToken.Palette.secondaryLabel
                             : (danger ? SCToken.Palette.warn : SCToken.Palette.ok))
+            SCKeyValue(key: "保活状态",
+                       value: model.keeperHealth,
+                       tint: model.keeperRestartCount == 0 ? SCToken.Palette.ok : SCToken.Palette.warn)
+            if model.keeperRestartCount > 0 {
+                Text("自愈过 \(model.keeperRestartCount) 次。偶发几次正常（来电、切耳机都会弄断会话），"
+                     + "但如果这个数字一直在涨，说明这里的会话很不稳，去看日志里那条“后台保活自愈”。")
+                    .font(SCToken.Text.caption)
+                    .foregroundColor(SCToken.Palette.secondaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let at = model.bgRefreshScheduledAt {
+                SCKeyValue(key: "兜底唤醒", value: "已排期（\(HomeView.relative(at))）")
+            }
             if danger, let at = model.maxTickGapAt {
                 Text("最长间隔出现在 \(HomeView.relative(at))。超过 30 秒说明那段时间进程被系统挂起，"
                      + "后台保活没生效。")
@@ -173,6 +187,50 @@ struct DiagnosticsView: View {
     }
 
     // MARK: - 剪贴板
+
+    // MARK: - 实时推送
+
+    private var pushCard: some View {
+        let connected = d.pushState == "已连接"
+        let unsupported = d.pushState == "此服务器类型不支持"
+        let tint = connected ? SCToken.Palette.ok
+                 : (unsupported ? SCToken.Palette.idle : SCToken.Palette.warn)
+        return SCCard("实时推送", footnote: "服务器本来就带推送通道：谁改了剪贴板，"
+                      + "服务端就把新内容直接推给在线的客户端。"
+                      + "通了的话 PC 上一复制，手机上几乎是立刻就变。") {
+            HStack(spacing: SCToken.Space.s) {
+                Circle().fill(tint).frame(width: 9, height: 9)
+                Text(d.pushState.isEmpty ? "还没测过" : d.pushState)
+                    .font(SCToken.Text.rowTitle)
+                    .foregroundColor(tint)
+            }
+            if !d.pushHub.isEmpty {
+                SCKeyValue(key: "地址", value: d.pushHub, mono: true)
+            }
+            SCKeyValue(key: "连接成功次数", value: "\(d.pushConnectCount)", mono: true)
+            SCKeyValue(key: "收到推送次数", value: "\(d.pushProfileCount)", mono: true)
+            if let at = d.pushLastEventAt {
+                SCKeyValue(key: "上次收到", value: HomeView.relative(at))
+            }
+            if let why = d.pushLastDisconnect, !why.isEmpty {
+                Text("上次断开：\(why)")
+                    .font(SCToken.Text.caption)
+                    .foregroundColor(SCToken.Palette.secondaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if d.pollIntervalEffective > 0 {
+                SCKeyValue(key: "实际轮询间隔",
+                           value: String(format: "%.1f 秒（推送连着时会退到 30 秒）", d.pollIntervalEffective),
+                           mono: true)
+            }
+            if !connected && !unsupported {
+                Text("没连上也不影响同步 —— 轮询照样在跑，只是没做到「秒级」。")
+                    .font(SCToken.Text.caption)
+                    .foregroundColor(SCToken.Palette.secondaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
 
     private var pasteboardCard: some View {
         SCCard("剪贴板实测") {

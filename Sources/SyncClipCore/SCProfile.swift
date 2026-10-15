@@ -49,8 +49,7 @@ public struct SCProfile: Codable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        let rawType = try c.decodeIfPresent(String.self, forKey: .type) ?? "Text"
-        self.type = Kind(rawValue: rawType) ?? .text
+        self.type = SCProfile.decodeKind(from: c)
         self.hash = try c.decodeIfPresent(String.self, forKey: .hash) ?? ""
         self.text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
         self.hasData = try c.decodeIfPresent(Bool.self, forKey: .hasData) ?? false
@@ -64,6 +63,35 @@ public struct SCProfile: Codable, Equatable {
             self.hasData = false
             self.dataName = nil
         }
+    }
+
+    /// 宽容地解出 type。
+    ///
+    /// 两种形态都得认，而且不能因为一个字段解不出来就丢掉整条消息：
+    ///   - 字符串 "Text"（服务端 DTO 上挂了 JsonStringEnumConverter，常见形态）
+    ///   - 数字 0/1/2/3（SignalR 的序列化配置与 MVC 不共享，完全可能吐数字）
+    ///
+    /// 数字顺序照服务端 `ProfileType` 的声明：**Text=0、File=1、Image=2、Group=3**
+    /// （注意 File 在 Image 前面 —— 这个顺序是从源码里核对过的，不是猜的）。
+    private static func decodeKind(from c: KeyedDecodingContainer<CodingKeys>) -> Kind {
+        if let s = try? c.decodeIfPresent(String.self, forKey: .type), let kind = Kind(rawValue: s) {
+            return kind
+        }
+        if let n = try? c.decodeIfPresent(Int.self, forKey: .type) {
+            switch n {
+            case 0: return .text
+            case 1: return .file
+            case 2: return .image
+            case 3: return .group
+            default: break
+            }
+        }
+        // 小写形态也认一下（有些实现会这么写）
+        if let s = try? c.decodeIfPresent(String.self, forKey: .type) {
+            let normalized = s.prefix(1).uppercased() + s.dropFirst().lowercased()
+            if let kind = Kind(rawValue: normalized) { return kind }
+        }
+        return .text
     }
 
     public func encode(to encoder: Encoder) throws {

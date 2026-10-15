@@ -270,6 +270,32 @@ public final class SCSyncEngine {
         return Stats(action: .pulled, note: "已写入本地剪贴板（\(body.utf8.count) 字节）")
     }
 
+    // MARK: - 服务器实时推来的内容
+
+    /// 处理「服务器主动推来的新剪贴板」（SignalR 的 RemoteProfileChanged）。
+    ///
+    /// 走的是和轮询完全相同的收敛逻辑，所以推送与轮询不会打架：
+    /// `applyRemote` 内部会先比对 hash，「已经是同一份内容就别写剪贴板」那一步照旧生效，
+    /// 不会因为来了个推送就无谓地抬高 changeCount。
+    ///
+    /// 首次对齐还没做时（App 刚起来、推送先到了）按 `startupSync` 的策略走，
+    /// 与轮询路径保持一致 —— 不能因为「这次是推送进来的」就把用户设的策略绕过去。
+    @discardableResult
+    public func applyPushedRemote(_ profile: SCProfile) async -> Stats {
+        let remoteText = await resolveText(of: profile)
+        lastRemoteProfile = profile
+        lastRemoteText = remoteText
+
+        if !state.primed {
+            let localText = SCPasteboard.readText()
+            let localHash = localText.map { SCProfile.textHash($0) }
+            return await prime(localHash: localHash, localText: localText,
+                               remoteHash: profile.normalizedHash, remote: profile,
+                               remoteText: remoteText)
+        }
+        return await applyRemote(profile, text: remoteText)
+    }
+
     #endif  // canImport(UIKit)
 
     // MARK: - 附件解析（Text + hasData 的情况）

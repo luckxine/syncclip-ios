@@ -21,6 +21,9 @@ public struct SCAppSettings: Codable, Equatable {
     public var conflictResolution: String
     public var syncEnabled: Bool
     public var keepAliveEnabled: Bool
+    /// 订阅服务器的实时推送（SyncClipboard 官方服务器才有，WebDAV/S3 没 Hub）。
+    /// 开着的话 PC 上一复制，手机上几乎是立刻就变；不依赖它也能靠轮询工作。
+    public var pushEnabled: Bool
     public var verboseLogging: Bool
 
     public init(servers: [SCServerProfile] = [],
@@ -30,6 +33,7 @@ public struct SCAppSettings: Codable, Equatable {
                 conflictResolution: String = "newest",
                 syncEnabled: Bool = true,
                 keepAliveEnabled: Bool = true,
+                pushEnabled: Bool = true,
                 verboseLogging: Bool = false) {
         self.servers = servers
         self.activeServerID = activeServerID
@@ -38,6 +42,7 @@ public struct SCAppSettings: Codable, Equatable {
         self.conflictResolution = conflictResolution
         self.syncEnabled = syncEnabled
         self.keepAliveEnabled = keepAliveEnabled
+        self.pushEnabled = pushEnabled
         self.verboseLogging = verboseLogging
     }
 
@@ -50,6 +55,7 @@ public struct SCAppSettings: Codable, Equatable {
         conflictResolution = try c.decodeIfPresent(String.self, forKey: .conflictResolution) ?? "newest"
         syncEnabled = try c.decodeIfPresent(Bool.self, forKey: .syncEnabled) ?? true
         keepAliveEnabled = try c.decodeIfPresent(Bool.self, forKey: .keepAliveEnabled) ?? true
+        pushEnabled = try c.decodeIfPresent(Bool.self, forKey: .pushEnabled) ?? true
         verboseLogging = try c.decodeIfPresent(Bool.self, forKey: .verboseLogging) ?? false
 
         // ---- 老版本配置迁移 ----

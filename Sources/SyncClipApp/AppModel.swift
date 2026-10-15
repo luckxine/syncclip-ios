@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import UIKit
+import BackgroundTasks
 import SyncClipCore
 
 /// App 的中枢：持有设置、同步循环、后台保活、日志和诊断结果。
@@ -55,6 +56,23 @@ final class AppModel: ObservableObject {
         var darwinNotifyAvailable: Bool = false
         var endpointDescription: String = ""
 
+        // 实时推送
+        var pushState: String = ""
+        var pushHub: String = ""
+        var pushConnectCount: Int = 0
+        var pushProfileCount: Int = 0
+        var pushLastEventAt: Date?
+        var pushLastDisconnect: String?
+        var pollIntervalEffective: TimeInterval = 0
+
+        // 后台保活 / 兜底唤醒
+        var keeperHealth: String = ""
+        var keeperRestarts: Int = 0
+        var bgRefreshScheduledAt: Date?
+        var maxTickGap: TimeInterval = 0
+        var maxTickGapAt: Date?
+        var tickCount: Int = 0
+
         var note: String = ""
 
         /// 地基是否就位：没有这几条 entitlement，读剪贴板就会弹「允许粘贴」
@@ -86,6 +104,17 @@ final class AppModel: ObservableObject {
     @Published var keepAliveError: String?
     @Published var isSyncing = false
 
+    // ---- 实时推送（SignalR）----
+    // 这是「PC 复制 → 手机立刻可用」的那条路：服务器本来就带 Hub，
+    // 谁 PUT 了新内容就把内容本身推给所有在线客户端，不必每 2 秒问一次。
+    @Published var pushState: String = "未启动"
+    @Published var pushEventCount = 0
+    @Published var bgRefreshScheduledAt: Date?
+
+    // ---- 后台保活的自愈情况 ----
+    @Published var keeperRestartCount = 0
+    @Published var keeperHealth: String = "未开启"
+
     // 后台保活到底有没有用，是这条路线唯一无法静态验证的事。
     // 所以把轮询节拍记下来：App 真被挂起的话，最长间隔会是分钟级而不是几秒。
     @Published var tickCount = 0
@@ -99,8 +128,12 @@ final class AppModel: ObservableObject {
     private var engine: SCSyncEngine?
     private var loop: Task<Void, Never>?
     private let keeper = BackgroundKeeper()
+    private var signalR: SCSignalR?
     private var didBootstrap = false
     private var pasteboardObserver: NSObjectProtocol?
+
+    /// 后台刷新任务的标识符（必须在 Info.plist 的 BGTaskSchedulerPermittedIdentifiers 里）
+    static let refreshTaskID = "com.cxk.syncclip.refresh"
 
     init(settings: SCAppSettings = SCAppSettings.load()) {
         self.settings = settings
@@ -144,6 +177,7 @@ final class AppModel: ObservableObject {
         refreshLocalPreview()
         startLoopIfPossible()
         applyKeepAlive()
+        registerBackgroundRefresh()
 
         Task { await testActiveConnection(silent: true) }
     }
@@ -174,6 +208,131 @@ final class AppModel: ObservableObject {
         } else {
             keeper.stop()
             keepAliveError = nil
+        }
+        refreshKeeperStats()
+    }
+
+    /// 保活的自愈次数不会发通知（它在后台线程上自增），所以定期主动取一次
+    private func refreshKeeperStats() {
+        keeperRestartCount = keeper.restartCount
+        keeperHealth = keeper.healthDescription
+    }
+
+    // MARK: - 实时推送
+
+    /// （重新）建立实时推送连接。切换服务器、改设置、开关总开关都要走这里。
+    private func restartPush() {
+        signalR?.stop()
+        signalR = nil
+        pushState = "未启动"
+
+        guard settings.syncEnabled, settings.pushEnabled else {
+            SCLog.info("实时推送已关闭（\(settings.syncEnabled ? "" : "同步总开关关着；")" 
+                       + "\(settings.pushEnabled ? "" : "设置里关着")）")
+            return
+        }
+        guard let profile = settings.activeServer else { return }
+
+        guard let client = SCSignalR(profile: profile) else {
+            // WebDAV / S3 没有 Hub，这不是错误
+            pushState = "此服务器类型不支持"
+            return
+        }
+
+        client.onEvent = { [weak self] event in
+            Task { @MainActor in self?.handlePushEvent(event) }
+        }
+        client.start()
+        signalR = client
+        pushState = "连接中"
+    }
+
+    private func handlePushEvent(_ event: SCSignalR.Event) {
+        switch event {
+        case .state(let state):
+            pushState = state.label
+            if case .waiting(_, let reason) = state {
+                SCLog.warn("实时推送断开：\(reason)")
+            }
+        case .remoteProfile(let profile):
+            Task { await applyPushed(profile) }
+        case .remoteHistory:
+            break
+        }
+    }
+
+    /// 服务器推来新内容时的处理。
+    ///
+    /// 走引擎里和轮询同一条收敛路径 —— 所以不会出现「推送和轮询各写一次剪贴板」，
+    /// 也不会因为来了个推送就把用户在设置里选的冲突策略绕过去。
+    private func applyPushed(_ profile: SCProfile) async {
+        guard let engine else { return }
+        pushEventCount += 1
+
+        let stats = await engine.applyPushedRemote(profile)
+        lastSyncAt = Date()
+        lastActionKind = stats.action
+        switch stats.action {
+        case .pulled: pullCount += 1
+        case .pushed: pushCount += 1
+        case .failed: failureCount += 1
+        case .skipped, .idle: break
+        }
+        lastAction = describe(stats) + "（实时推送）"
+        refreshPreviews(from: engine)
+    }
+
+    /// 回到前台时叫一下：长连接大概已经被系统掐了，不必等退避
+    func enterForeground() {
+        signalR?.nudge()
+        refreshKeeperStats()
+    }
+
+    // MARK: - 后台刷新（BGTaskScheduler）
+    //
+    // 这是兜底：音频保活会把进程留在后台，BGTask 则是「App 真被杀了之后，
+    // 系统还会偶尔把它叫起来跑一轮」的那条路。系统不保证时间，可能几十分钟一次，
+    // 也可能一直不叫 —— 所以它是补充，不是指望。
+
+    private func registerBackgroundRefresh() {
+        let ok = BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.refreshTaskID,
+                                                 using: nil) { [weak self] task in
+            guard let self = self else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            self.handleBackgroundRefresh(task as? BGAppRefreshTask)
+        }
+        SCLog.info("后台刷新任务注册：\(ok ? "成功" : "失败（标识符可能没写进 Info.plist）")")
+    }
+
+    /// 进后台时排下一次。必须在进后台的瞬间排，否则被杀之后系统没理由唤醒你。
+    func scheduleBackgroundRefresh() {
+        let request = BGAppRefreshTaskRequest(identifier: Self.refreshTaskID)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)   // 只是「最早」，实际由系统决定
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            bgRefreshScheduledAt = Date()
+            SCLog.debug("已排下一次后台刷新（最早 15 分钟后）")
+        } catch {
+            SCLog.warn("后台刷新任务排期失败：\(error)")
+        }
+    }
+
+    func enterBackground() {
+        scheduleBackgroundRefresh()
+        refreshKeeperStats()
+    }
+
+    private func handleBackgroundRefresh(_ task: BGAppRefreshTask?) {
+        SCLog.info("系统唤醒了后台刷新任务，跑一轮同步")
+        scheduleBackgroundRefresh()          // 先排下一次，不然就只有这一回
+        guard let task = task else { return }
+        let work = Task { await self.syncNow(silent: true) }
+        task.expirationHandler = { work.cancel() }
+        Task {
+            _ = await work.value
+            task.setTaskCompleted(success: true)
         }
     }
 
@@ -265,6 +424,11 @@ final class AppModel: ObservableObject {
         loop = nil
         isLoopRunning = false
         engine = nil
+        // 这里的 stop 是必须的：换服务器之后旧连接还挂着的话，
+        // 会把**另一台服务器**的内容推到这个剪贴板上
+        signalR?.stop()
+        signalR = nil
+        pushState = "未启动"
 
         guard settings.syncEnabled else {
             SCLog.info("同步已关闭（设置里打开总开关才会轮询）")
@@ -291,6 +455,7 @@ final class AppModel: ObservableObject {
 
         engine = newEngine
         isLoopRunning = true
+        restartPush()
         SCLog.info("同步循环启动：[\(config.serverType.displayName)] "
                    + "\(config.profile.displaySubtitle)，每 \(String(format: "%.1f", config.pollInterval))s，"
                    + "启动=\(config.startupSync.rawValue)，冲突=\(config.conflictResolution.rawValue)")
@@ -299,10 +464,22 @@ final class AppModel: ObservableObject {
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.runOneRound()
-                let interval = max(0.5, config.pollInterval)
+                let interval = self.pollIntervalNow
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             }
         }
+    }
+
+    /// 本轮之后等多久。
+    ///
+    /// 实时推送连着的时候，轮询只当一根保险丝 —— 没必要再每 2 秒去问一次服务器，
+    /// 既省电也省服务器。断了就自动回到用户设的间隔，不会漏内容。
+    private var pollIntervalNow: TimeInterval {
+        let base = max(0.5, settings.pollInterval)
+        if signalR?.snapshot().state.isConnected == true {
+            return max(base, 30)
+        }
+        return base
     }
 
     private func runOneRound() async {
@@ -317,6 +494,7 @@ final class AppModel: ObservableObject {
         }
         lastTickAt = now
         tickCount += 1
+        refreshKeeperStats()
 
         guard let engine else { return }
 
@@ -490,6 +668,24 @@ final class AppModel: ObservableObject {
 
         d.darwinNotifyAvailable = SCDarwinNotify.isAvailable
 
+        if let snapshot = signalR?.snapshot() {
+            d.pushState = snapshot.state.label
+            d.pushHub = snapshot.hubURL
+            d.pushConnectCount = snapshot.connectCount
+            d.pushProfileCount = snapshot.profilePushCount
+            d.pushLastEventAt = snapshot.lastEventAt
+            d.pushLastDisconnect = snapshot.lastDisconnectReason
+        } else {
+            d.pushState = settings.pushEnabled ? "未启动" : "设置里关着"
+        }
+        d.pollIntervalEffective = pollIntervalNow
+        d.keeperHealth = keeper.healthDescription
+        d.keeperRestarts = keeper.restartCount
+        d.bgRefreshScheduledAt = bgRefreshScheduledAt
+        d.maxTickGap = maxTickGap
+        d.maxTickGapAt = maxTickGapAt
+        d.tickCount = tickCount
+
         if let profile = settings.activeServer {
             let cfg = SCConfig(profile: profile,
                                pollInterval: settings.pollInterval,
@@ -511,6 +707,18 @@ final class AppModel: ObservableObject {
         if d.pasteboardTypes.isEmpty { notes.append("剪贴板当前是空的") }
         if d.pasteboardText == nil && !d.pasteboardTypes.isEmpty {
             notes.append("剪贴板里有内容但没有可读文本（例如图片）")
+        }
+        if isLoopRunning {
+            if signalR?.snapshot().state.isConnected == true {
+                notes.append("实时推送已连接，轮询退到 \(Int(d.pollIntervalEffective))s 当保险丝")
+            } else {
+                notes.append("实时推送没连上（\(d.pushState)），仍在按 \(String(format: "%.1f", d.pollIntervalEffective))s 轮询")
+            }
+        }
+        if !settings.keepAliveEnabled {
+            notes.append("后台保活关着，进后台几十秒后就不再同步")
+        } else if keeperRestartCount > 0 {
+            notes.append("后台保活自愈过 \(keeperRestartCount) 次")
         }
         d.note = notes.joined(separator: "；")
 
