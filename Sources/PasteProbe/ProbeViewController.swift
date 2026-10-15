@@ -80,11 +80,12 @@ final class ProbeViewController: UIViewController {
             makeButton("开机自启", #selector(onDemandTapped)),
         ])
         let row3 = makeRow([
+            makeButton("列出配置", #selector(listConfigsTapped)),
             makeButton("重置 VPN 配置", #selector(resetTapped)),
             makeButton("刷新日志", #selector(dumpTapped)),
-            makeButton("清空日志", #selector(clearTapped)),
         ])
         let row4 = makeRow([
+            makeButton("清空日志", #selector(clearTapped)),
             makeButton("还原剪贴板", #selector(restoreTapped)),
         ])
 
@@ -148,6 +149,8 @@ final class ProbeViewController: UIViewController {
     @objc private func restoreTapped() { runner.restoreClipboard() }
 
     @objc private func resetTapped() { runner.resetConfiguration() }
+
+    @objc private func listConfigsTapped() { runner.listConfigurations() }
 
     @objc private func clearTapped() {
         ProbeLog.clear()
