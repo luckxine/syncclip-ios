@@ -43,17 +43,21 @@ struct RootView: View {
                 .tabItem { Label("同步", systemImage: "arrow.triangle.2.circlepath") }
                 .tag(0)
 
+            InboxView()
+                .tabItem { Label("收件箱", systemImage: "tray.and.arrow.down") }
+                .tag(1)
+
             ServersView()
                 .tabItem { Label("服务器", systemImage: "server.rack") }
-                .tag(1)
+                .tag(2)
 
             SettingsView()
                 .tabItem { Label("设置", systemImage: "slider.horizontal.3") }
-                .tag(2)
+                .tag(3)
 
             DiagnosticsView()
                 .tabItem { Label("诊断", systemImage: "stethoscope") }
-                .tag(3)
+                .tag(4)
         }
         .modifier(ToastModifier(message: $model.toast))
     }

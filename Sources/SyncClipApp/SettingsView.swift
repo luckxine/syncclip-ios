@@ -6,12 +6,15 @@ struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
 
     private static let intervalOptions: [Double] = [1, 2, 3, 5, 10, 30]
+    private static let fileMBOptions = [5, 10, 15, 20, 30, 50]
+    private static let keepDayOptions = [3, 7, 14, 30]
 
     var body: some View {
         NavigationView {
             ScrollView {
                 VStack(spacing: SCToken.Space.l) {
                     syncCard
+                    fileCard
                     behaviorCard
                     keepAliveCard
                     aboutCard
@@ -135,6 +138,85 @@ struct SettingsView: View {
                       isOn: Binding(
                         get: { model.settings.verboseLogging },
                         set: { model.settings.verboseLogging = $0; model.settingsChanged() }))
+        }
+    }
+
+    // MARK: - 文件同步（M2-M5）
+
+    private var fileCard: some View {
+        SCCard("文件同步",
+               footnote: "文件不走剪贴板：远端来的落在「收件箱」页，也能在文件 App 里直接看到；"
+               + "发出去用首页的「选文件上传」。") {
+            toggleRow(icon: "tray.and.arrow.down",
+                      tint: SCToken.accent(for: model.settings.activeServer?.type ?? .syncclipboard),
+                      title: "接收文件",
+                      subtitle: "远端文件落收件箱并发通知",
+                      isOn: Binding(
+                        get: { model.settings.fileSyncEnabled },
+                        set: { model.settings.fileSyncEnabled = $0; model.settingsChanged() }))
+
+            SCCardDivider()
+
+            toggleRow(icon: "rectangle.stack.fill",
+                      tint: SCToken.accent(for: model.settings.activeServer?.type ?? .syncclipboard),
+                      title: "接收文件组",
+                      subtitle: "Windows 一次复制的多个文件/文件夹，到手机后自动解包成目录",
+                      isOn: Binding(
+                        get: { model.settings.groupSyncEnabled },
+                        set: { model.settings.groupSyncEnabled = $0; model.settingsChanged() }))
+
+            SCCardDivider()
+
+            toggleRow(icon: "doc.on.clipboard",
+                      tint: SCToken.Palette.warn,
+                      title: "文件也写入剪贴板（实验）",
+                      subtitle: "实验性：拉到文件的同时往剪贴板写引用，供跨 App 粘贴。"
+                          + "需先在「诊断」页通过 P3 探针再开",
+                      isOn: Binding(
+                        get: { model.settings.fileClipboardWriteEnabled },
+                        set: { model.settings.fileClipboardWriteEnabled = $0; model.settingsChanged() }))
+
+            if model.settings.fileSyncEnabled || model.settings.groupSyncEnabled {
+                SCCardDivider()
+                HStack {
+                    Text("单文件上限")
+                        .font(SCToken.Text.rowSubtitle)
+                        .foregroundColor(SCToken.Palette.label)
+                    Spacer()
+                    Picker("单文件上限", selection: Binding(
+                        get: { model.settings.maxFileMB },
+                        set: { model.settings.maxFileMB = $0; model.settingsChanged() })) {
+                        ForEach(Self.fileMBOptions, id: \.self) { v in
+                            Text("\(v) MB").tag(v)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+                Text("超限的文件会被明确跳过并通知，绝不静默。上传页选的文件超限时也会提前给黄色提示。")
+                    .font(SCToken.Text.caption)
+                    .foregroundColor(SCToken.Palette.secondaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            SCCardDivider()
+
+            HStack {
+                Text("收件箱保留")
+                    .font(SCToken.Text.rowSubtitle)
+                    .foregroundColor(SCToken.Palette.label)
+                Spacer()
+                Picker("收件箱保留", selection: Binding(
+                    get: { model.settings.inboxKeepDays },
+                    set: { model.settings.inboxKeepDays = $0; model.settingsChanged() })) {
+                    ForEach(Self.keepDayOptions, id: \.self) { v in
+                        Text("\(v) 天").tag(v)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+            Text("收件箱页顶部的「清理」按这个天数一键清旧文件。")
+                .font(SCToken.Text.caption)
+                .foregroundColor(SCToken.Palette.secondaryLabel)
         }
     }
 

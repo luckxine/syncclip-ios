@@ -7,6 +7,8 @@ struct HomeView: View {
     @EnvironmentObject private var model: AppModel
     /// 用来从「切换服务器」跳到服务器页
     @Binding var selectedTab: Int
+    /// 「选文件上传」弹出的多选页
+    @State private var showGroupPicker = false
 
     private var activeProfile: SCServerProfile? { model.settings.activeServer }
 
@@ -84,6 +86,9 @@ struct HomeView: View {
             }
         }
         .navigationViewStyle(.stack)
+        .sheet(isPresented: $showGroupPicker) {
+            GroupPickerView()
+        }
     }
 
     // MARK: - 状态卡
@@ -213,6 +218,15 @@ struct HomeView: View {
                     Task { await model.pullRemote() }
                 }
             }
+
+            HStack(spacing: SCToken.Space.s) {
+                SCSecondaryButton(title: "选文件上传", icon: "square.and.arrow.up.on.square") {
+                    showGroupPicker = true
+                }
+                SCSecondaryButton(title: "拉取到收件箱", icon: "tray.and.arrow.down") {
+                    Task { await model.pullIntoInbox() }
+                }
+            }
         }
     }
 
@@ -263,7 +277,7 @@ struct HomeView: View {
 
                 HStack {
                     Button {
-                        selectedTab = 1
+                        selectedTab = 2
                     } label: {
                         Label(model.settings.servers.count > 1 ? "切换服务器（\(model.settings.servers.count)）" : "管理服务器",
                               systemImage: "arrow.left.arrow.right")
@@ -288,7 +302,7 @@ struct HomeView: View {
                              title: "还没有服务器",
                              message: "SyncClipboard 服务器、WebDAV、S3 兼容存储都支持。",
                              actionTitle: "去添加") {
-                    selectedTab = 1
+                    selectedTab = 2
                 }
             }
         }
@@ -311,6 +325,17 @@ struct HomeView: View {
                           placeholder: "还没从服务器取到内容",
                           lineLimit: 5) {
                     model.copyToClipboard(model.remotePreview)
+                }
+
+                if model.remoteIsFileLike {
+                    Button {
+                        selectedTab = 1
+                    } label: {
+                        Label("去收件箱查看", systemImage: "tray.full")
+                            .font(SCToken.Text.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.accentColor)
                 }
             }
         }

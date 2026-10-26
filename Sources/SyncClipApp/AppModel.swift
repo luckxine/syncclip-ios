@@ -106,6 +106,12 @@ final class AppModel: ObservableObject {
     @Published var keepAliveError: String?
     @Published var isSyncing = false
 
+    // ---- M2-M5 文件同步 ----
+    /// 收件箱列表（远端拉下来的文件/目录），收件箱页直接展示这份
+    @Published var inboxItems: [InboxItem] = []
+    /// 远端当前内容是不是文件/文件组 —— 首页「去收件箱查看」按钮据此显隐
+    @Published var remoteIsFileLike = false
+
     // ---- M0 机制探针（设计稿 §6）----
     @Published var probeP1Armed = false
     @Published var probeP1Lines: [String] = []
@@ -187,6 +193,7 @@ final class AppModel: ObservableObject {
         applyKeepAlive()
         registerBackgroundRefresh()
         setupNotifications()
+        exportServerConfigForExtensions()
 
         Task { await testActiveConnection(silent: true) }
     }
@@ -208,6 +215,7 @@ final class AppModel: ObservableObject {
         persistSettings()
         startLoopIfPossible()
         applyKeepAlive()
+        exportServerConfigForExtensions()
     }
 
     private func applyKeepAlive() {
@@ -289,6 +297,8 @@ final class AppModel: ObservableObject {
         }
         lastAction = describe(stats) + "（实时推送）"
         refreshPreviews(from: engine)
+        if stats.action == .pulled { refreshInbox() }
+        appendHistoryThrottled(action: stats.action)
         notifyIfNeeded(stats)
     }
 
@@ -531,6 +541,8 @@ final class AppModel: ObservableObject {
         }
 
         refreshPreviews(from: engine)
+        if stats.action == .pulled { refreshInbox() }
+        appendHistoryThrottled(action: stats.action)
         notifyIfNeeded(stats)
     }
 
@@ -602,6 +614,124 @@ final class AppModel: ObservableObject {
         refreshPreviews(from: engine)
     }
 
+    // MARK: - 文件收发（M2/M3）
+
+    /// 收件箱列表刷新。同步循环拉到文件/文件组后自动调，收件箱页下拉刷新也走这里。
+    func refreshInbox() {
+        inboxItems = SCInbox.shared.items()
+    }
+
+    /// 多选上传：GroupPicker 选完的一组 URL 交给引擎逐个推。
+    /// 超限的文件由引擎逐个守卫跳过（会明确通知），这里不提前拦。
+    func pushFiles(urls: [URL]) async {
+        guard let engine else {
+            toast = "同步尚未启动，请先在「服务器」里配好一台"
+            return
+        }
+        guard !urls.isEmpty else { return }
+
+        // 文档选择器给的是安全作用域 URL：读字节前必须先拿权限，
+        // await 期间一直持有，推完统一释放
+        var accessed: [URL] = []
+        for url in urls where url.startAccessingSecurityScopedResource() {
+            accessed.append(url)
+        }
+        defer { accessed.forEach { $0.stopAccessingSecurityScopedResource() } }
+
+        isSyncing = true
+        let stats = await engine.pushFiles(urls: urls)
+        isSyncing = false
+
+        lastActionKind = stats.action
+        switch stats.action {
+        case .pushed:
+            pushCount += 1
+            lastSyncAt = Date()
+            lastAction = "已推送 \(urls.count) 个文件"
+            toast = stats.note
+        case .failed:
+            failureCount += 1
+            lastAction = "文件推送失败"
+            toast = "推送失败：\(stats.note)"
+            SCLog.error("文件推送失败：\(stats.note)")
+        default:
+            lastAction = describe(stats)
+            toast = stats.note
+        }
+    }
+
+    /// 把远端的文件/文件组拉进收件箱（不动剪贴板）。
+    func pullIntoInbox() async {
+        guard let engine else {
+            toast = "同步尚未启动，请先在「服务器」里配好一台"
+            return
+        }
+        isSyncing = true
+        let stats = await engine.pullIntoInbox()
+        isSyncing = false
+
+        lastActionKind = stats.action
+        switch stats.action {
+        case .pulled:
+            pullCount += 1
+            lastSyncAt = Date()
+            lastAction = "远端文件已拉进收件箱"
+            toast = stats.note
+            refreshInbox()
+        case .failed:
+            failureCount += 1
+            lastAction = "拉取到收件箱失败"
+            toast = "拉取失败：\(stats.note)"
+            SCLog.error("拉取到收件箱失败：\(stats.note)")
+        default:
+            lastAction = describe(stats)
+            toast = stats.note.isEmpty ? lastAction : stats.note
+            refreshInbox()
+        }
+    }
+
+    // MARK: - 扩展接线（M4/M5）
+    //
+    // 分享/键盘扩展和主 App 不在一个沙盒里，能共享的只有 App Group：
+    //   · 服务器配置：主 App 是唯一可信来源，每次改动都重新导出一份
+    //   · 剪贴板历史：同步循环每轮成功后写入，键盘扩展的「基础模式」就靠它
+    // App Group 不可用（TrollStore 没给权限 / K1 未过）时全部静默跳过 ——
+    // 主 App 自己的功能一个都不依赖它，缺的只是那两个扩展。
+
+    private var lastHistoryAppendAt: Date?
+    private var didLogAppGroupUnavailable = false
+
+    /// 把当前设置导出到 App Group 给扩展用。不可用时静默跳过，只记一次日志。
+    private func exportServerConfigForExtensions() {
+        guard AppGroupStore.isAvailable else {
+            if !didLogAppGroupUnavailable {
+                didLogAppGroupUnavailable = true
+                SCLog.info("App Group 不可用，跳过向分享/键盘扩展导出配置")
+            }
+            return
+        }
+        AppGroupStore.exportServerConfig(settings)
+    }
+
+    /// 每轮同步成功后把最新内容喸给键盘扩展的历史。轮询最短 1 秒一轮，
+    /// 每轮都写文件太频；键盘要的是「最近复制过什么」，分钟级新鲜度足够。
+    private func appendHistoryThrottled(action: SCSyncEngine.Action) {
+        guard action == .pulled || action == .pushed else { return }
+        let now = Date()
+        if let last = lastHistoryAppendAt, now.timeIntervalSince(last) < 60 { return }
+        guard let profile = engine?.lastRemoteProfile else { return }
+        switch profile.type {
+        case .text:
+            AppGroupStore.appendHistory(kind: "text", text: profile.text, imageHint: nil)
+        case .image:
+            let name = profile.dataName ?? "image"
+            AppGroupStore.appendHistory(kind: "image", text: name, imageHint: name)
+        case .file, .group:
+            break   // 文件不进历史：键盘只消费文本/图片，文件走收件箱
+        }
+        lastHistoryAppendAt = now
+    }
+
     // MARK: - 预览
 
     /// 上次生成预览时的 changeCount：图片预览要读整个字节流，
@@ -623,7 +753,7 @@ final class AppModel: ObservableObject {
             return
         }
         if SCPasteboard.hasFileURL {
-            localPreview = "[文件引用] 文件同步将在 M2 提供"
+            localPreview = "[文件引用] 等下一轮同步推送（按文件开关和大小上限）"
             return
         }
         localPreview = SCPasteboard.readText() ?? ""
@@ -633,7 +763,9 @@ final class AppModel: ObservableObject {
         refreshLocalPreview()
         if let text = engine.lastRemoteText {
             remotePreview = text
+            remoteIsFileLike = false
         } else if let profile = engine.lastRemoteProfile {
+            remoteIsFileLike = (profile.type == .file || profile.type == .group)
             switch profile.type {
             case .text:
                 remotePreview = profile.text.isEmpty ? "（远端为空）" : profile.text
@@ -641,13 +773,14 @@ final class AppModel: ObservableObject {
                 let size = profile.size.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "?"
                 remotePreview = "[图片] \(profile.dataName ?? "?") · \(size)"
             case .file:
-                remotePreview = "[文件] \(profile.text)（M2 提供）"
+                remotePreview = "[文件] \(profile.text) · 已落收件箱"
             case .group:
                 let count = profile.text.split(separator: "\n").count
-                remotePreview = "[\(count) 个文件]（M3 提供）"
+                remotePreview = "[文件组] \(count) 个文件 · 已落收件箱"
             }
         } else {
             remotePreview = ""
+            remoteIsFileLike = false
         }
     }
 

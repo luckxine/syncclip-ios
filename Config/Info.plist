@@ -18,9 +18,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.3.0</string>
+	<string>1.4.0</string>
 	<key>CFBundleVersion</key>
-	<string>6</string>
+	<string>7</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>iPhoneOS</string>
@@ -65,6 +65,17 @@
 		<string>audio</string>
 		<string>fetch</string>
 	</array>
+
+	<!--
+	  收件箱在文件 App 里可见的关键（M2）：
+	  UIFileSharingEnabled 把整个 Documents 目录暴露给文件 App；
+	  LSSupportsOpeningDocumentsInPlace 允许就地打开（不拷副本）。
+	  少任何一个，用户在文件 App 里都看不到 Inbox 目录。
+	-->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 
 	<!--
 	  后台刷新（BGTaskScheduler）的标识符白名单。

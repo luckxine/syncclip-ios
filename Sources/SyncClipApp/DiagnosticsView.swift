@@ -6,6 +6,10 @@ struct DiagnosticsView: View {
 
     @EnvironmentObject private var model: AppModel
     @State private var busy = false
+    /// PlugIns 目录下的 appex（P4）：装没装只看这个目录，别的都是间接信号
+    @State private var appexEntries: [String] = []
+    /// 键盘心跳日志（K1/K3）：进页时从 App Group 读一批
+    @State private var keyboardLog: [String] = []
 
     private var d: AppModel.Diagnostics { model.diagnostics }
 
@@ -16,6 +20,8 @@ struct DiagnosticsView: View {
                     foundationCard
                     checksCard
                     probeCard
+                    extensionCard
+                    keyboardCard
                     keepAliveCard
                     pushCard
                     pasteboardCard
@@ -53,6 +59,7 @@ struct DiagnosticsView: View {
         }
         .navigationViewStyle(.stack)
         .onAppear {
+            refreshExtensionCards()
             if model.diagnostics.binaryPath.isEmpty {
                 Task { await runDiagnostics() }
             }
@@ -234,6 +241,96 @@ struct DiagnosticsView: View {
                  : (line.hasPrefix("⚠️") || line.hasPrefix("⏱") ? SCToken.Palette.warn
                  : SCToken.Palette.secondaryLabel)))
             .fixedSize(horizontal: false, vertical: true)
+    }
+
+    // MARK: - P4 扩展安装状态
+
+    private var extensionCard: some View {
+        SCCard("P4 · 分享/键盘扩展",
+               footnote: "扩展是打进 ipa 的 PlugIns 目录随包安装的，装没装以这里列出的为准。") {
+            if appexEntries.isEmpty {
+                HStack(alignment: .top, spacing: SCToken.Space.s) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(SCToken.Palette.warn)
+                    Text("没发现任何扩展 —— 需要用包含扩展的完整 ipa 重装；精简包/单独装主 App 不会有。")
+                        .font(SCToken.Text.caption)
+                        .foregroundColor(SCToken.Palette.secondaryLabel)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                ForEach(appexEntries, id: \.self) { name in
+                    HStack(spacing: SCToken.Space.m) {
+                        Image(systemName: "puzzlepiece.fill")
+                            .font(.system(size: 13))
+                            .foregroundColor(SCToken.Palette.ok)
+                        Text(name)
+                            .font(SCToken.Text.rowSubtitle)
+                            .foregroundColor(SCToken.Palette.label)
+                        Spacer(minLength: SCToken.Space.s)
+                        SCPill(text: "已安装", color: SCToken.Palette.ok, compact: true)
+                    }
+                }
+            }
+
+            SCCardDivider()
+
+            VStack(alignment: .leading, spacing: SCToken.Space.xs) {
+                Text("怎么验证能用")
+                    .font(SCToken.Text.rowSubtitle)
+                    .foregroundColor(SCToken.Palette.label)
+                Text("分享：去任意 App 分享一张图，分享面板里选「剪贴板同步」")
+                    .font(SCToken.Text.caption)
+                    .foregroundColor(SCToken.Palette.secondaryLabel)
+                Text("键盘：设置 → 通用 → 键盘 → 键盘 → 添加新键盘")
+                    .font(SCToken.Text.caption)
+                    .foregroundColor(SCToken.Palette.secondaryLabel)
+            }
+        }
+    }
+
+    // MARK: - K1/K3 键盘存活
+
+    private var keyboardCard: some View {
+        SCCard("K1/K3 · 键盘存活",
+               footnote: "键盘扩展每次被系统拉起都往 App Group 写一行心跳，"
+               + "这里就是原始记录 —— 没记录 = 键盘从没被拉起过；"
+               + "相邻两行的时间差就是 K3 要量的「切走后还活多久」。") {
+            if !AppGroupStore.isAvailable {
+                Text("App Group 不可用：键盘读不到主 App 写的任何数据（K1 未过，或安装时没带上权限组）。"
+                     + "主 App 的同步不受影响。")
+                    .font(SCToken.Text.caption)
+                    .foregroundColor(SCToken.Palette.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if keyboardLog.isEmpty {
+                Text("还没有心跳记录。先按上面 P4 的指引把键盘加进来，再去任意输入框切出键盘。")
+                    .font(SCToken.Text.caption)
+                    .foregroundColor(SCToken.Palette.secondaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(alignment: .leading, spacing: SCToken.Space.xs) {
+                    Text("最近 \(keyboardLog.count) 条")
+                        .font(SCToken.Text.caption)
+                        .foregroundColor(SCToken.Palette.secondaryLabel)
+                    ForEach(keyboardLog, id: \.self) { line in
+                        probeLine(line)
+                    }
+                }
+            }
+        }
+    }
+
+    private func refreshExtensionCards() {
+        // appex 列表直接读主包 PlugIns 目录；键盘日志从 App Group 读，
+        // App Group 不可用时留空 —— 两张卡各自有空态文案，不在这里报错
+        if let plugins = Bundle.main.builtInPlugInsURL,
+           let contents = try? FileManager.default.contentsOfDirectory(
+               at: plugins, includingPropertiesForKeys: nil) {
+            appexEntries = contents.map(\.lastPathComponent).sorted()
+        } else {
+            appexEntries = []
+        }
+        keyboardLog = AppGroupStore.isAvailable ? AppGroupStore.readKeyboardLog(30) : []
     }
 
     // MARK: - 后台保活
