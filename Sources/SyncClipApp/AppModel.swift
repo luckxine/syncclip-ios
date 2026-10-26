@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import UIKit
 import BackgroundTasks
+import UserNotifications
 import SyncClipCore
 
 /// App 的中枢：持有设置、同步循环、后台保活、日志和诊断结果。
@@ -48,6 +49,7 @@ final class AppModel: ObservableObject {
 
         var pasteboardChangeCount: Int = -1
         var pasteboardTypes: [String] = []
+        var pasteboardItems: [(uti: String, bytes: Int)] = []
         var pasteboardText: String?
         var readMillis: Double = 0
 
@@ -103,6 +105,12 @@ final class AppModel: ObservableObject {
     @Published var toast: String?
     @Published var keepAliveError: String?
     @Published var isSyncing = false
+
+    // ---- M0 机制探针（设计稿 §6）----
+    @Published var probeP1Armed = false
+    @Published var probeP1Lines: [String] = []
+    @Published var probeP2Lines: [String]?
+    @Published var probeP3Lines: [String]?
 
     // ---- 实时推送（SignalR）----
     // 这是「PC 复制 → 手机立刻可用」的那条路：服务器本来就带 Hub，
@@ -174,10 +182,11 @@ final class AppModel: ObservableObject {
             Task { @MainActor in await self?.syncNow(silent: true) }
         }
 
-        refreshLocalPreview()
+        refreshLocalPreview(force: true)
         startLoopIfPossible()
         applyKeepAlive()
         registerBackgroundRefresh()
+        setupNotifications()
 
         Task { await testActiveConnection(silent: true) }
     }
@@ -280,6 +289,7 @@ final class AppModel: ObservableObject {
         }
         lastAction = describe(stats) + "（实时推送）"
         refreshPreviews(from: engine)
+        notifyIfNeeded(stats)
     }
 
     /// 回到前台时叫一下：长连接大概已经被系统掐了，不必等退避
@@ -496,6 +506,8 @@ final class AppModel: ObservableObject {
         tickCount += 1
         refreshKeeperStats()
 
+        checkP1Probe()
+
         guard let engine else { return }
 
         isSyncing = true
@@ -519,6 +531,7 @@ final class AppModel: ObservableObject {
         }
 
         refreshPreviews(from: engine)
+        notifyIfNeeded(stats)
     }
 
     private func describe(_ stats: SCSyncEngine.Stats) -> String {
@@ -543,62 +556,96 @@ final class AppModel: ObservableObject {
     }
 
     func pushCurrentClipboard() async {
-        guard let engine, let text = SCPasteboard.readText(), !text.isEmpty else {
-            toast = "剪贴板里没有可同步的文本"
+        guard let engine else {
+            toast = "同步尚未启动，请先在「服务器」里配好一台"
             return
         }
-        do {
-            try await engine.manualSet(text)
+        let stats = await engine.pushNow()
+        lastActionKind = stats.action
+        switch stats.action {
+        case .pushed:
             pushCount += 1
-            lastAction = "已手动推送当前剪贴板"
-            lastActionKind = .pushed
             lastSyncAt = Date()
-            toast = "已推送 \(text.utf8.count) 字节"
-        } catch {
+            lastAction = "已手动推送当前剪贴板"
+            toast = stats.note
+        case .failed:
             failureCount += 1
             lastAction = "手动推送失败"
-            lastActionKind = .failed
-            toast = "推送失败：\(error)"
-            SCLog.error("手动推送失败：\(error)")
+            toast = "推送失败：\(stats.note)"
+            SCLog.error("手动推送失败：\(stats.note)")
+        default:
+            lastAction = describe(stats)
+            toast = stats.note
         }
         refreshPreviews(from: engine)
     }
 
     func pullRemote() async {
         guard let engine else { toast = "同步尚未启动"; return }
-        do {
-            if let text = try await engine.manualGet(), !text.isEmpty {
-                SCPasteboard.writeText(text)
-                pullCount += 1
-                lastAction = "已手动拉取远端并写入剪贴板"
-                lastActionKind = .pulled
-                lastSyncAt = Date()
-                toast = "已拉取 \(text.utf8.count) 字节"
-            } else {
-                toast = "远端当前不是可同步的文本"
-            }
-        } catch {
+        let stats = await engine.pullNow()
+        lastActionKind = stats.action
+        switch stats.action {
+        case .pulled:
+            pullCount += 1
+            lastSyncAt = Date()
+            lastAction = "已手动拉取远端并写入剪贴板"
+            toast = stats.note
+        case .failed:
             failureCount += 1
             lastAction = "手动拉取失败"
-            lastActionKind = .failed
-            toast = "拉取失败：\(error)"
-            SCLog.error("手动拉取失败：\(error)")
+            toast = "拉取失败：\(stats.note)"
+            SCLog.error("手动拉取失败：\(stats.note)")
+        default:
+            lastAction = describe(stats)
+            toast = stats.note.isEmpty ? lastAction : stats.note
         }
         refreshPreviews(from: engine)
     }
 
     // MARK: - 预览
 
-    private func refreshLocalPreview() {
+    /// 上次生成预览时的 changeCount：图片预览要读整个字节流，
+    /// 没变化就不重读（轮询每 2 秒刷一次预览，不能每次都啿图片）。
+    private var lastPreviewChangeCount = -1
+
+    private func refreshLocalPreview(force: Bool = false) {
+        let cc = SCPasteboard.changeCount
+        guard force || cc != lastPreviewChangeCount else { return }
+        lastPreviewChangeCount = cc
+
+        if SCPasteboard.hasImage {
+            if case .raw(let data, let uti)? = SCPasteboard.readImagePayload() {
+                let size = ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
+                localPreview = "[图片] \(uti) · \(size)"
+            } else {
+                localPreview = "[图片] （原始字节不可得，只能拿解码后的图）"
+            }
+            return
+        }
+        if SCPasteboard.hasFileURL {
+            localPreview = "[文件引用] 文件同步将在 M2 提供"
+            return
+        }
         localPreview = SCPasteboard.readText() ?? ""
     }
 
     private func refreshPreviews(from engine: SCSyncEngine) {
         refreshLocalPreview()
-        if let remote = engine.lastRemoteText {
-            remotePreview = remote
+        if let text = engine.lastRemoteText {
+            remotePreview = text
         } else if let profile = engine.lastRemoteProfile {
-            remotePreview = "（远端是 \(profile.type.rawValue) 类型，v1 只同步文本）"
+            switch profile.type {
+            case .text:
+                remotePreview = profile.text.isEmpty ? "（远端为空）" : profile.text
+            case .image:
+                let size = profile.size.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "?"
+                remotePreview = "[图片] \(profile.dataName ?? "?") · \(size)"
+            case .file:
+                remotePreview = "[文件] \(profile.text)（M2 提供）"
+            case .group:
+                let count = profile.text.split(separator: "\n").count
+                remotePreview = "[\(count) 个文件]（M3 提供）"
+            }
         } else {
             remotePreview = ""
         }
@@ -606,7 +653,7 @@ final class AppModel: ObservableObject {
 
     /// 手动刷新本地预览（下拉刷新时用）
     func refreshPreviews() {
-        refreshLocalPreview()
+        refreshLocalPreview(force: true)
         if let engine { refreshPreviews(from: engine) }
     }
 
@@ -642,6 +689,164 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - M0 机制探针（P1/P2/P3，设计稿 §6）
+    //
+    // 三个机制风险点先在真机钉死，过了才把设置里的「图片同步」打开：
+    //   P1 后台读图 —— 挂在同步循环上，测的就是生产路径本身
+    //   P2 读文件 App 拷贝的文件 —— 即点即测
+    //   P3 写 file-url 引用 —— 即点即测，结果要去文件 App 里粘一下才算数
+
+    private var p1BaselineChangeCount = -1
+    private var p1ArmedAt: Date?
+
+    /// P1 布防：之后用户去拷一张图，循环（前台或保活后台）发现变化就地读一次。
+    func armP1() {
+        p1BaselineChangeCount = SCPasteboard.changeCount
+        p1ArmedAt = Date()
+        probeP1Armed = true
+        probeP1Lines = [
+            "已布防（基线 changeCount=\(p1BaselineChangeCount)）。接下来：",
+            "① 截图或去相册，拷贝一张图",
+            "② 立刻锁屏或回桌面，等 1 分钟（「后台保活」保持开着）",
+            "③ 回到本页看结果 —— 成功失败都算数，别提前打开 App",
+            "（5 分钟没等到变化自动解除）"
+        ]
+        SCLog.info("P1 探针布防：baseline changeCount=\(p1BaselineChangeCount)")
+    }
+
+    func disarmP1() {
+        probeP1Armed = false
+        p1ArmedAt = nil
+        probeP1Lines = ["已手动解除"]
+    }
+
+    /// 每轮同步开头调用。布防状态下剪贴板一变就抓现场。
+    private func checkP1Probe() {
+        guard probeP1Armed else { return }
+        if let armed = p1ArmedAt, Date().timeIntervalSince(armed) > 300 {
+            probeP1Armed = false
+            probeP1Lines = ["⏱ 5 分钟没等到剪贴板变化，已自动解除",
+                            "（如果这期间同步循环一直在跑，说明拷贝没生效或被其他 App 顶掉）"]
+            SCLog.warn("P1 探针超时解除")
+            return
+        }
+        guard SCPasteboard.changeCount != p1BaselineChangeCount else { return }
+
+        let stateName: String
+        switch UIApplication.shared.applicationState {
+        case .active: stateName = "前台"
+        case .inactive: stateName = "不活跃（切换中）"
+        case .background: stateName = "后台"
+        @unknown default: stateName = "未知"
+        }
+        let t0 = Date()
+        let payload = SCPasteboard.readImagePayload()
+        let ms = Date().timeIntervalSince(t0) * 1000
+        probeP1Armed = false
+
+        if case .raw(let data, let uti) = payload {
+            probeP1Lines = [
+                "✅ 读到图片原始字节",
+                "UTI：\(uti)",
+                "字节：\(data.count)（\(String(format: "%.2f", Double(data.count) / 1024 / 1024)) MB）",
+                "耗时：\(String(format: "%.0f", ms)) ms · App 状态：\(stateName)",
+                stateName == "后台" ? "结论：后台读图免弹窗成立，图片推送后台可用"
+                                   : "结论：\(stateName)可读；后台可用性需状态=后台的那次验证"
+            ]
+            SCLog.info("P1 ✅ raw uti=\(uti) count=\(data.count) ms=\(Int(ms)) state=\(stateName)")
+        } else if case .decoded(let image) = payload {
+            probeP1Lines = [
+                "⚠️ 只拿到解码后的 UIImage（原始字节不可得）",
+                "尺寸：\(Int(image.size.width))×\(Int(image.size.height)) · 耗时 \(String(format: "%.0f", ms)) ms · 状态：\(stateName)",
+                "结论：可用但走兑底路径（动图丢帧）——把下面的 UTI dump 抄回来分析"
+            ]
+            SCLog.info("P1 ⚠️ decoded \(Int(image.size.width))x\(Int(image.size.height)) state=\(stateName)")
+        } else {
+            probeP1Lines = [
+                "❌ changeCount 变了但读不到图（可能拷的是文本触发的）",
+                "当前 UTI：\(SCPasteboard.typeIdentifiers.joined(separator: ", "))",
+                "若刚拷的确实是图：这就是 P1 失败 —— 后台读图被拦，图片推送退化为仅前台"
+            ]
+            SCLog.warn("P1 ❌ no image payload; utis=\(SCPasteboard.typeIdentifiers.joined(separator: ","))")
+        }
+    }
+
+    /// P2：读文件 App 里拷贝的文件。
+    func runP2() async {
+        probeP2Lines = ["读取中…（若没拷过文件会立刻报「剪贴板里没有文件」）"]
+        do {
+            let copied = try await SCPasteboard.readCopiedFile()
+            let attrs = try FileManager.default.attributesOfItem(atPath: copied.url.path)
+            let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+            var lines = [
+                "✅ 文件已从剪贴板拷出（路径：\(copied.via)）",
+                "文件名：\(copied.url.lastPathComponent)",
+                "大小：\(size) 字节"
+            ]
+            if size <= 16 * 1024 * 1024 {
+                let data = try Data(contentsOf: copied.url)
+                lines.append("SHA-256：\(SCCrypto.sha256Hex(data))")
+                lines.append("校验：去源文件处比大小（文件 App 长按 → 显示简介）")
+            } else {
+                lines.append("（文件较大，跳过哈希）")
+            }
+            lines.append("副本：\(copied.url.path)")
+            probeP2Lines = lines
+            SCLog.info("P2 ✅ \(copied.url.lastPathComponent) \(size)B via=\(copied.via)")
+        } catch {
+            probeP2Lines = ["❌ \(error)"]
+            SCLog.warn("P2 ❌ \(error)")
+        }
+    }
+
+    /// P3：把一个测试文件的 file-url 写进剪贴板，去文件 App 粘。
+    func runP3() {
+        let name = "P3-粘贴测试-\(Int(Date().timeIntervalSince1970)).txt"
+        let url = SCAppSettings.defaultDirectory.appendingPathComponent(name)
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let content = "syncclip P3 探针生成于 \(stamp)\n能在文件 App 里粘贴出这个文件，"
+            + "说明 file-url 写剪贴板跨 App 可用。\n"
+        do {
+            try content.data(using: .utf8)!.write(to: url, options: .atomic)
+            SCPasteboard.writeFileReference(url)
+            probeP3Lines = [
+                "已生成测试文件并写入剪贴板引用：\(name)",
+                "现在去 文件 App → 浏览 → 任一文件夹 → 长按空白处 → 粘贴：",
+                "· 能粘出 txt = P3 通过（文件拉取可开「写入剪贴板」实验开关）",
+                "· 没有「粘贴」选项 = P3 失败（文件拉取只走收件箱，不走剪贴板）",
+                "（尽快去粘：沙盒文件引用的可用性随进程状态变化）"
+            ]
+            SCLog.info("P3 已写入 file-url 引用：\(name)")
+        } catch {
+            probeP3Lines = ["❌ 生成测试文件失败：\(error)"]
+        }
+    }
+
+    // MARK: - 本地通知（provisional，不弹授权框）
+    //
+    // 用 .provisional：首次请求系统不弹窗，通知静默进通知中心 ——
+    // 后台拉到图片 / 超限跳过看得见，又不要求用户先点「允许」。
+    // 想要横幅去 系统设置 → 通知 → 剪贴板同步 里开。
+
+    private func setupNotifications() {
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound, .provisional]) { _, error in
+                if let error {
+                    SCLog.warn("通知授权失败（不影响同步）：\(error.localizedDescription)")
+                }
+            }
+    }
+
+    private func notifyIfNeeded(_ stats: SCSyncEngine.Stats) {
+        guard stats.notify, UIApplication.shared.applicationState != .active else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "剪贴板同步"
+        content.body = stats.note
+        let request = UNNotificationRequest(identifier: UUID().uuidString,
+                                            content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
+
     // MARK: - 诊断
 
     func runDiagnostics() async {
@@ -658,6 +863,7 @@ final class AppModel: ObservableObject {
 
         d.pasteboardChangeCount = SCPasteboard.changeCount
         d.pasteboardTypes = SCPasteboard.typeIdentifiers
+        d.pasteboardItems = SCPasteboard.itemDump()
         let t0 = Date()
         d.pasteboardText = SCPasteboard.readText()
         d.readMillis = Date().timeIntervalSince(t0) * 1000

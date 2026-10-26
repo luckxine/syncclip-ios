@@ -92,6 +92,42 @@ struct SettingsView: View {
 
             SCCardDivider()
 
+            toggleRow(icon: "photo.on.rectangle",
+                      tint: SCToken.Palette.ok,
+                      title: "图片同步（M1）",
+                      subtitle: model.settings.imageSyncEnabled
+                          ? "截图/相册/网页拷贝的图片双向同步；HEIC 自动转 JPEG"
+                          : "建议先去「诊断」页跑 P1 探针，通过后再打开",
+                      isOn: Binding(
+                        get: { model.settings.imageSyncEnabled },
+                        set: { model.settings.imageSyncEnabled = $0; model.settingsChanged() }))
+
+            if model.settings.imageSyncEnabled {
+                VStack(alignment: .leading, spacing: SCToken.Space.s) {
+                    HStack {
+                        Text("单张图片上限")
+                            .font(SCToken.Text.rowSubtitle)
+                            .foregroundColor(SCToken.Palette.label)
+                        Spacer()
+                        Picker("单张图片上限", selection: Binding(
+                            get: { model.settings.maxImageMB },
+                            set: { model.settings.maxImageMB = $0; model.settingsChanged() })) {
+                            ForEach([5, 10, 15, 20, 30, 50], id: \.self) { v in
+                                Text("\(v) MB").tag(v)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                    Text("103 隧道实测 15MB 稳定、21MB 必断（frp 修复前）；默认 15MB 是安全值，"
+                         + "超限的图片会明确跳过并通知，绝不静默。")
+                        .font(SCToken.Text.caption)
+                        .foregroundColor(SCToken.Palette.secondaryLabel)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            SCCardDivider()
+
             toggleRow(icon: "text.alignleft",
                       tint: SCToken.Palette.secondaryLabel,
                       title: "详细日志",

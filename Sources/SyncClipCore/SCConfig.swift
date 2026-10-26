@@ -46,6 +46,13 @@ public struct SCConfig: Equatable {
     /// 两端同时变了以谁为准
     public var conflictResolution: SCConflictResolution
 
+    /// 图片双向同步（M1）。默认关：探针（P1）真机验证过了再开。
+    public var imageSyncEnabled: Bool
+
+    /// 单张图片的大小上限（字节）。103 隧道实测 15MB 稳定 / 21MB 必断
+    /// （设计稿 §1.5），frp 修复并复测前默认 15MB。
+    public var maxImageBytes: Int
+
     public enum StartupSync: String, Codable, CaseIterable, Identifiable {
         case pull, push, none
         public var id: String { rawValue }
@@ -61,22 +68,30 @@ public struct SCConfig: Equatable {
     public init(profile: SCServerProfile,
                 pollInterval: TimeInterval = 2,
                 startupSync: StartupSync = .pull,
-                conflictResolution: SCConflictResolution = .newest) {
+                conflictResolution: SCConflictResolution = .newest,
+                imageSyncEnabled: Bool = false,
+                maxImageBytes: Int = 15 * 1024 * 1024) {
         self.profile = profile
         self.pollInterval = max(0.5, pollInterval)
         self.startupSync = startupSync
         self.conflictResolution = conflictResolution
+        self.imageSyncEnabled = imageSyncEnabled
+        self.maxImageBytes = maxImageBytes
     }
 
     /// 从已填好的 server profile 构造（校验交给 profile）
     public init(profile: SCServerProfile,
                 pollInterval: Double,
                 startupSyncRaw: String,
-                conflictRaw: String) {
+                conflictRaw: String,
+                imageSyncEnabled: Bool = false,
+                maxImageBytes: Int = 15 * 1024 * 1024) {
         self.init(profile: profile,
                   pollInterval: pollInterval,
                   startupSync: StartupSync(rawValue: startupSyncRaw) ?? .pull,
-                  conflictResolution: SCConflictResolution(rawValue: conflictRaw) ?? .newest)
+                  conflictResolution: SCConflictResolution(rawValue: conflictRaw) ?? .newest,
+                  imageSyncEnabled: imageSyncEnabled,
+                  maxImageBytes: maxImageBytes)
     }
 
     // MARK: - 便捷访问

@@ -243,12 +243,36 @@ syncclip://pull    把远端内容拉到剪贴板
 | 限制 | 说明 | 后备方案 |
 |---|---|---|
 | 后台保活靠音频会话 | **会被系统大约 3 小时后静默节流**；App 被强杀后要重新打开一次才会继续。全部备选手段见 [`docs/keepalive.md`](docs/keepalive.md)，正在验的 NE 路线见 [`docs/probe.md`](docs/probe.md) | 轻点背面触发 URL scheme；或等 NE 探针结论 |
-| 只同步文本 | `Image`/`File`/`Group` 类型会**安全跳过**（不会用空内容覆盖剪贴板） | 后续版本 |
+| 图片/文件类型需手动开启 | 图片同步默认关（先跑诊断页 M0 探针）；`File`/`Group` 尚未实现，会明确跳过 | M2/M3（见「七点五」） |
 | 轮询不是瞬时 | 默认 2 秒延迟 | 改小 `pollInterval` |
 | 网络断开期间不推送 | 断开时不写状态，恢复后本地改动仍会推上去（不会静默丢） | — |
 
-跳过逻辑是刻意写死的：如果剪贴板里是图片（`hasStrings == false` 但 `types` 非空），
+跳过逻辑是刻意写死的：如果剪贴板里是图片（`hasStrings == false` 但 `types` 非空）,
 或者远端 profile 不是文本，同步引擎**什么都不做**。宁可不同步，也不能把内容弄丢。
+
+---
+
+## 七点五、v2：全类型同步（进行中，2026-10 起）
+
+v1 的「只同步文本」是三处刻意跳过（引擎首轮、拉取分派、推送构造），协议层什么都不缺。
+v2 把它泛化为全类型，分阶段落地，设计全稿见 `D:/poxian/syncclip-ios-redesign.md`（M0-M6）。
+
+**已落地（v1.3.0，M0 + M1）：**
+
+- **引擎泛化**（`SCSyncEngine`）：本地分类 文本→图片→文件引用，changeCount 门控
+  （剪贴板没变就不重读/重哈希）；digest 前缀 `T:`/`I:` 区分类型；文本路径行为与 v1 一致
+- **图片双向同步**（默认关，设置里开）：推送 原字节直传（PNG/JPEG/GIF 保真、GIF 保动图），
+  HEIC 转 JPEG 0.85 对齐上游；拉取 sniff 真实格式后 `setData` 原始字节进剪贴板，不走 UIImage；
+  单张上限默认 15MB（103 frp 隧道实测 21MB 必断，修复前安全值），超限明确跳过+通知
+- **M0 机制探针**（诊断页）：P1 后台读图（挂在同步循环上测生产路径）、
+  P2 读文件 App 拷贝（iOS 15 无 `itemProviders`，三级兑底：file-url+NSFileCoordinator →
+  file-url 直接读 → iOS16+ itemProviders，哪级通用 via 字段回传）、P3 写 file-url 引用；
+  另有逐 UTI 字节数 dump（P0）
+- **本地通知**：provisional 授权（不弹窗、静默进通知中心），后台拉到图片/超限跳过可见
+- **手动物理按钮泛化**：推送/拉取按钮对图片同样生效
+
+**待做：** M2 单文件+收件箱 → M3 Group(zip) → M4 分享菜单（依赖 TrollStore appex 探针 P4）→
+M5 键盘取用面板（双模式）→ M6 历史记录。frp 服务器端修复（frpc poolCount=10）待执行。
 
 ---
 

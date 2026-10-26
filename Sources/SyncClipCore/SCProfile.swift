@@ -130,6 +130,28 @@ public struct SCProfile: Codable, Equatable {
         return SCCrypto.sha256Hex("\(fileName)|\(inner)")
     }
 
+    /// 图片 profile：文件必须已经在服务器上（先 putFile 再 putProfile，顺序反了 404）。
+    /// text 字段按上游约定存文件名。
+    public static func image(fileName: String, content: Data) -> SCProfile {
+        attachment(type: .image, fileName: fileName, content: content)
+    }
+
+    /// 单文件 profile（M2 用，形状先定好）
+    public static func fileEntry(fileName: String, content: Data) -> SCProfile {
+        attachment(type: .file, fileName: fileName, content: content)
+    }
+
+    private static func attachment(type: Kind, fileName: String, content: Data) -> SCProfile {
+        SCProfile(type: type,
+                  hash: fileHash(fileName: fileName, content: content),
+                  text: fileName,
+                  hasData: true,
+                  dataName: fileName,
+                  transferDataHash: SCCrypto.sha256Hex(content),
+                  size: Int64(content.count),
+                  syncedAt: nil)
+    }
+
     /// 内容唯一标识（协议规定大小写不敏感比较，这里统一成大写）
     public var normalizedHash: String { hash.uppercased() }
 

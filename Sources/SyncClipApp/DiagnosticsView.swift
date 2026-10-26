@@ -15,6 +15,7 @@ struct DiagnosticsView: View {
                 VStack(spacing: SCToken.Space.l) {
                     foundationCard
                     checksCard
+                    probeCard
                     keepAliveCard
                     pushCard
                     pasteboardCard
@@ -148,6 +149,93 @@ struct DiagnosticsView: View {
         }
     }
 
+    // MARK: - M0 机制探针
+    //
+    // 图片/文件同步的三个机制风险点，真机各跑一遍；
+    // 过了再去设置里打开「图片同步」。
+
+    private var probeCard: some View {
+        SCCard("机制探针（M0）", footnote: "P1/P2 的结果自动回来；P3 要去文件 App 里粘一下才算数。"
+               + "跑完把结果页截图或抄回来。") {
+            VStack(alignment: .leading, spacing: SCToken.Space.xs) {
+                HStack {
+                    Text("P1 · 后台读图（图片同步的地基）")
+                        .font(SCToken.Text.rowTitle)
+                    Spacer()
+                    Button(model.probeP1Armed ? "解除" : "布防") {
+                        model.probeP1Armed ? model.disarmP1() : model.armP1()
+                    }
+                    .font(SCToken.Text.caption)
+                    .buttonStyle(.bordered)
+                }
+                if model.probeP1Armed {
+                    HStack(spacing: SCToken.Space.s) {
+                        Circle().fill(SCToken.Palette.warn).frame(width: 8, height: 8)
+                        Text("布防中 —— 等待剪贴板变化")
+                            .font(SCToken.Text.caption)
+                            .foregroundColor(SCToken.Palette.secondaryLabel)
+                    }
+                }
+                ForEach(model.probeP1Lines, id: \.self) { line in
+                    probeLine(line)
+                }
+            }
+
+            SCCardDivider()
+
+            VStack(alignment: .leading, spacing: SCToken.Space.xs) {
+                HStack {
+                    Text("P2 · 读文件 App 拷贝的文件")
+                        .font(SCToken.Text.rowTitle)
+                    Spacer()
+                    Button("读取") {
+                        Task { await model.runP2() }
+                    }
+                    .font(SCToken.Text.caption)
+                    .buttonStyle(.bordered)
+                }
+                Text("先去文件 App 长按任一文件 → 拷贝，再回这里点「读取」")
+                    .font(SCToken.Text.caption)
+                    .foregroundColor(SCToken.Palette.tertiaryLabel)
+                if let lines = model.probeP2Lines {
+                    ForEach(lines, id: \.self) { line in
+                        probeLine(line)
+                    }
+                }
+            }
+
+            SCCardDivider()
+
+            VStack(alignment: .leading, spacing: SCToken.Space.xs) {
+                HStack {
+                    Text("P3 · 写文件引用进剪贴板")
+                        .font(SCToken.Text.rowTitle)
+                    Spacer()
+                    Button("写入") {
+                        model.runP3()
+                    }
+                    .font(SCToken.Text.caption)
+                    .buttonStyle(.bordered)
+                }
+                if let lines = model.probeP3Lines {
+                    ForEach(lines, id: \.self) { line in
+                        probeLine(line)
+                    }
+                }
+            }
+        }
+    }
+
+    private func probeLine(_ line: String) -> some View {
+        Text(line)
+            .font(SCToken.Text.monoSmall)
+            .foregroundColor(line.hasPrefix("✅") ? SCToken.Palette.ok
+                 : (line.hasPrefix("❌") ? SCToken.Palette.bad
+                 : (line.hasPrefix("⚠️") || line.hasPrefix("⏱") ? SCToken.Palette.warn
+                 : SCToken.Palette.secondaryLabel)))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     // MARK: - 后台保活
 
     private var keepAliveCard: some View {
@@ -240,6 +328,21 @@ struct DiagnosticsView: View {
                        value: d.pasteboardTypes.isEmpty ? "（空）"
                             : d.pasteboardTypes.joined(separator: ", "),
                        mono: true)
+
+            if !d.pasteboardItems.isEmpty {
+                SCCardDivider()
+                VStack(alignment: .leading, spacing: SCToken.Space.xs) {
+                    Text("逐 UTI 字节数（拷贝来源不同，形态不同 —— P0 现场记录）")
+                        .font(SCToken.Text.caption)
+                        .foregroundColor(SCToken.Palette.secondaryLabel)
+                    ForEach(Array(d.pasteboardItems.enumerated()), id: \.offset) { _, item in
+                        Text("\(item.uti) · \(item.bytes >= 0 ? "\(item.bytes) 字节" : "非字节值")")
+                            .font(SCToken.Text.monoSmall)
+                            .foregroundColor(SCToken.Palette.secondaryLabel)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
 
             SCCardDivider()
 
