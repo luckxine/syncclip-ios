@@ -214,7 +214,7 @@ public enum SCPasteboard {
             }
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: work)
 
-            coordinator.coordinate(readingItemAt: url, options: .forUpTo1Minute, error: &coordinationError) { src in
+            coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) { src in
                 guard !resumed else { return }
                 do {
                     let dest = Self.tempCopyDestination(for: src)
