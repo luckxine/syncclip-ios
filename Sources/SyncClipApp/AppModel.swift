@@ -5,6 +5,7 @@ import BackgroundTasks
 import UserNotifications
 import SyncClipApp
 import SyncClipCore
+import SyncClipApp
 
 /// App 的中枢：持有设置、同步循环、后台保活、日志和诊断结果。
 ///

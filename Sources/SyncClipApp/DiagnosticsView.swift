@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import SyncClipCore
+import SyncClipApp
 
 struct DiagnosticsView: View {
 

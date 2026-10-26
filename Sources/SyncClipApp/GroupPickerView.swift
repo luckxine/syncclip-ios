@@ -162,8 +162,8 @@ struct GroupPickerView: View {
 
 // MARK: - 文档选择器包装
 //
-// UIDocumentPickerViewController(forOpeningContentTypes:asMultipleSelection:)
-// 是 iOS 14+ 的 API（iOS 15 天花板内），比 SwiftUI 自带的 fileImporter
+// UIDocumentPickerViewController(forOpeningContentTypes:asCopy:) +
+// allowsMultipleSelection 是 iOS 14+ 的 API（iOS 15 天花板内），比 SwiftUI 自带的 fileImporter
 // 多一个「多选」能力 —— 而多选正是这个页存在的理由。
 private struct DocumentPicker: UIViewControllerRepresentable {
     var onPicked: ([URL]) -> Void
@@ -172,7 +172,8 @@ private struct DocumentPicker: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item, .folder],
-                                                    asMultipleSelection: true)
+                                                    asCopy: false)
+        picker.allowsMultipleSelection = true
         picker.delegate = context.coordinator
         return picker
     }
