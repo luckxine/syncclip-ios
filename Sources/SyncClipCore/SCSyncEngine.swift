@@ -8,9 +8,9 @@ import UIKit
 /// 越狱路线由 LaunchAgent 守护进程驱动它，TrollStore 路线由 App 内线程驱动它——
 /// 同一份代码，两种常驻方式。
 ///
-/// v2（全类型）：本地内容的分类从「只有文本」泛化为「文本 / 图片 /（未来的）文件」，
-/// 远端 profile 的应用也按 type 分派。判定、仲裁、首次对齐的结构与 v1 完全一致，
-/// 文本路径的行为保持不变。
+/// v2（全类型）：本地内容的分类从「只有文本」泛化为「文本 / 图片 / 文件」，
+/// 远端 profile 的应用也按 type 分派（Group 解包进收件箱，不经剪贴板）。
+/// 判定、仲裁、首次对齐的结构与 v1 完全一致，文本路径的行为保持不变。
 public final class SCSyncEngine {
 
     public enum Action: String {
@@ -35,11 +35,15 @@ public final class SCSyncEngine {
         }
     }
 
-    /// 本地剪贴板当前的内容类型（file/group 是 M2/M3，先留位）
+    /// 本地剪贴板当前的内容类型。
+    /// file = 文件 App「拷贝」出的单文件引用；group 只出现在手动多选推送后的
+    /// 远端状态里 —— iOS 剪贴板没有「多文件」形态，Group 永远不经剪贴板。
     public enum LocalKind: String {
         case none
         case text
         case image
+        case file
+        case group
     }
 
     /// engine 内部对「上一次见到的两端内容」的记忆
@@ -121,6 +125,9 @@ public final class SCSyncEngine {
         var imageUTI: String?
         /// 原始字节拿不到、只能拿解码后 UIImage 的兜底（推送时会注明转码损失）
         var imageIsDecoded = false
+        /// 剪贴板里 public.file-url 的原始字节（M2）：分类期只读这个轻量数据，
+        /// 真正的文件字节等推送时才经 readCopiedFile 拷出
+        var fileURLData: Data? = nil
         var utiList: [String] = []
     }
 
@@ -164,6 +171,15 @@ public final class SCSyncEngine {
                     snap.kind = .none
                 }
             }
+        } else if let fileURL = board.data(forPasteboardType: SCPasteboard.fileURLUTI),
+                  !fileURL.isEmpty {
+            // 文件引用（设计稿 §3 第 3 优先级）。digest 只用 file-url 字节：
+            // 读真正的文件内容要过协调读/临时拷贝，不该发生在分类期。
+            // 代价：同名文件改完内容再拷一次，URL 字节不变 → 判不出「变了」，
+            // 这轮不推 —— 已知限制，M2 真机验收观察项。
+            snap.kind = .file
+            snap.fileURLData = fileURL
+            snap.digest = "F:" + SCCrypto.sha256Hex(fileURL)
         }
 
         state.lastChangeCount = cc
@@ -187,6 +203,14 @@ public final class SCSyncEngine {
         }
         if snap.kind == .image && !config.imageSyncEnabled {
             // 图片同步关着：同样整轮不动（v1 语义）。开关打开后引擎会重建，不受影响。
+            state.lastLocalDigest = nil
+            state.lastLocalKind = .none
+            let why = skipReason(for: snap)
+            SCLog.debug("跳过本地内容：\(why)")
+            return Stats(action: .skipped, note: why)
+        }
+        if snap.kind == .file && !config.fileSyncEnabled {
+            // 文件同步关着：与图片同一语义 —— 整轮不动，开关打开后引擎重建
             state.lastLocalDigest = nil
             state.lastLocalKind = .none
             let why = skipReason(for: snap)
@@ -256,8 +280,8 @@ public final class SCSyncEngine {
         if !config.imageSyncEnabled && SCPasteboard.hasImage {
             return "剪贴板是图片，图片同步未开启（设置里可开）"
         }
-        if snap.utiList.contains(SCPasteboard.fileURLUTI) {
-            return "剪贴板是文件引用，文件同步将在 M2 版本提供"
+        if !config.fileSyncEnabled && snap.utiList.contains(SCPasteboard.fileURLUTI) {
+            return "剪贴板是文件，文件同步未开启（设置里可开）"
         }
         return "剪贴板是不支持的内容类型（\(snap.utiList.joined(separator: ","))），本轮不动"
     }
@@ -308,6 +332,7 @@ public final class SCSyncEngine {
         case .pull:
             let pullable = (remote.type == .text && !(lastRemoteText ?? "").isEmpty)
                         || (remote.type == .image && remote.hasData)
+                        || ((remote.type == .file || remote.type == .group) && remote.hasData)
             if pullable {
                 return await applyRemoteProfile(remote)
             }
@@ -330,7 +355,10 @@ public final class SCSyncEngine {
             return await pushText(snap)
         case .image:
             return await pushImage(snap)
-        case .none:
+        case .file:
+            return await pushClipboardFile(snap)
+        case .group, .none:
+            // group 不会出现在剪贴板分类里；这里是防御性兑底
             return Stats(action: .idle, note: "")
         }
     }
@@ -414,6 +442,34 @@ public final class SCSyncEngine {
                      note: String(format: "已推送图片 %.1f MB（%@）%@", Self.megabytes(payload.count), fileName, via))
     }
 
+    /// 剪贴板里的文件引用 → 单文件直传（M2 入口 A）。
+    ///
+    /// 字节真正拷出（readCopiedFile：协调读/直接读/itemProviders 三级兑底）
+    /// 只发生在推送这一步，而不是分类期 —— 拷贝要过 NSFileCoordinator，贵。
+    /// 成功后 lastLocalDigest 记的是分类期的 file-url 字节 hash，
+    /// 与 cachedSnapshot 一致，下一轮不会重复推。
+    private func pushClipboardFile(_ snap: LocalSnapshot) async -> Stats {
+        guard config.fileSyncEnabled else {
+            return Stats(action: .skipped, note: skipReason(for: snap))
+        }
+        do {
+            let copied = try await SCPasteboard.readCopiedFile()
+            let name = copied.suggestedName ?? copied.url.lastPathComponent
+            let stats = await pushSingleFile(at: copied.url, fileName: name)
+            // readCopiedFile 落在临时目录的副本用完即删，不留垃圾
+            try? FileManager.default.removeItem(at: copied.url)
+            if stats.action == .pushed {
+                state.lastLocalDigest = snap.digest
+                state.lastLocalKind = .file
+                state.localDirtySince = nil
+            }
+            return stats
+        } catch {
+            SCLog.warn("读取剪贴板文件失败：\(error)")
+            return Stats(action: .skipped, note: "读取剪贴板文件失败：\(error)", notify: true)
+        }
+    }
+
     // MARK: - 拉取方向
 
     /// 远端 profile 的统一入口：按 type 分派。
@@ -423,11 +479,10 @@ public final class SCSyncEngine {
             return applyRemoteText(remote)
         case .image:
             return await applyRemoteImage(remote)
-        case .file, .group:
-            state.lastRemoteHash = remote.normalizedHash
-            let why = "远端是 \(remote.type.rawValue) 类型，文件同步将在后续版本（M2/M3）提供"
-            SCLog.debug("跳过远端内容：\(why)")
-            return Stats(action: .skipped, note: why)
+        case .file:
+            return await applyRemoteFile(remote)
+        case .group:
+            return await applyRemoteGroup(remote)
         }
     }
 
@@ -535,6 +590,120 @@ public final class SCSyncEngine {
                      notify: true)
     }
 
+    /// 远端单文件 → 收件箱（+ 可选写剪贴板 file-url）。剪贴板默认不动：
+    /// 「跨 App 粘出文件」的置信度由 P3 探针把关，开关默认关（设计稿 §4.2）；
+    /// 收件箱 + 文件 App 永远是主路径。
+    private func applyRemoteFile(_ remote: SCProfile) async -> Stats {
+        guard config.fileSyncEnabled else {
+            state.lastRemoteHash = remote.normalizedHash
+            return Stats(action: .skipped, note: "远端是文件，文件同步未开启（设置里可开）")
+        }
+        guard remote.hasData, let dataName = remote.dataName, !dataName.isEmpty else {
+            state.lastRemoteHash = remote.normalizedHash
+            return Stats(action: .skipped, note: "远端文件 profile 缺 dataName，已拦截")
+        }
+        if let size = remote.size, Int(size) > config.maxFileBytes {
+            state.lastRemoteHash = remote.normalizedHash
+            let mb = Self.megabytes(Int(size))
+            let limit = Self.megabytes(config.maxFileBytes)
+            SCLog.warn("远端文件 \(mb) MB 超过上限，未拉取")
+            return Stats(action: .skipped,
+                         note: String(format: "远端文件 %.1f MB 超过上限 %.0f MB，未拉取（设置里可调）", mb, limit),
+                         notify: true)
+        }
+
+        let data: Data
+        do {
+            // 传输层已按 transferDataHash 校验；不符会抛错 —— 不落盘坏文件
+            data = try await client.getFile(dataName: dataName,
+                                            expectedTransferDataHash: remote.transferDataHash)
+        } catch {
+            SCLog.error("拉取文件 \(dataName) 失败：\(error)")
+            return Stats(action: .failed, note: "拉取文件失败：\(error)", notify: true)
+        }
+
+        let saved: URL
+        do {
+            saved = try SCInbox.shared.save(data: data, name: dataName)
+        } catch {
+            SCLog.error("写入收件箱失败：\(error)")
+            return Stats(action: .failed, note: "写入收件箱失败：\(error)", notify: true)
+        }
+
+        var note = String(format: "已存入收件箱：%@（%.1f MB）",
+                          saved.lastPathComponent, Self.megabytes(data.count))
+        if config.fileClipboardWriteEnabled {
+            SCPasteboard.writeFileReference(saved)
+            // 写了剪贴板就必须同步快照：否则下一轮 changeCount 变了，
+            // 刚写入的 file-url 会被当成「本地新内容」又推回去
+            let digest = "F:" + SCCrypto.sha256Hex(saved.dataRepresentation)
+            state.lastLocalDigest = digest
+            state.lastLocalKind = .file
+            state.lastChangeCount = SCPasteboard.changeCount
+            state.localDirtySince = nil
+            cachedSnapshot = LocalSnapshot(kind: .file, digest: digest, text: nil,
+                                           imageData: nil, imageUTI: nil, imageIsDecoded: false,
+                                           fileURLData: saved.dataRepresentation,
+                                           utiList: [SCPasteboard.fileURLUTI])
+            note += "，并写入剪贴板文件引用"
+        }
+        // 没写剪贴板时不动 lastLocalDigest / localDirtySince：剪贴板里可能还挂着
+        // 没推上去的本地内容，它的「脏」不该被这轮拉取抹掉
+
+        state.lastRemoteHash = remote.normalizedHash
+        state.primed = true
+        SCLog.info("拉取文件：\(dataName) → 收件箱")
+        return Stats(action: .pulled, note: note, notify: true)
+    }
+
+    /// 远端 Group → 解 zip 到收件箱子目录。Group 永远不碰剪贴板
+    /// （iOS 剪贴板没有多文件形态，设计稿 §4.3），产物只进收件箱。
+    private func applyRemoteGroup(_ remote: SCProfile) async -> Stats {
+        guard config.groupSyncEnabled else {
+            state.lastRemoteHash = remote.normalizedHash
+            return Stats(action: .skipped, note: "远端是多文件（Group），Group 同步未开启（设置里可开）")
+        }
+        guard remote.hasData, let dataName = remote.dataName, !dataName.isEmpty else {
+            state.lastRemoteHash = remote.normalizedHash
+            return Stats(action: .skipped, note: "远端 Group profile 缺 dataName，已拦截")
+        }
+        if let size = remote.size, Int(size) > config.maxFileBytes {
+            state.lastRemoteHash = remote.normalizedHash
+            let mb = Self.megabytes(Int(size))
+            let limit = Self.megabytes(config.maxFileBytes)
+            SCLog.warn("远端 Group \(mb) MB 超过上限，未拉取")
+            return Stats(action: .skipped,
+                         note: String(format: "远端多文件共 %.1f MB 超过上限 %.0f MB，未拉取（设置里可调）", mb, limit),
+                         notify: true)
+        }
+
+        let data: Data
+        do {
+            data = try await client.getFile(dataName: dataName,
+                                            expectedTransferDataHash: remote.transferDataHash)
+        } catch {
+            SCLog.error("拉取 Group \(dataName) 失败：\(error)")
+            return Stats(action: .failed, note: "拉取多文件失败：\(error)", notify: true)
+        }
+
+        let dir: URL
+        do {
+            dir = try SCInbox.shared.extractGroup(zipData: data, zipName: dataName)
+        } catch {
+            SCLog.error("解包 Group \(dataName) 失败：\(error)")
+            return Stats(action: .failed, note: "解包多文件失败：\(error)", notify: true)
+        }
+
+        // 产物在收件箱不在剪贴板：本地对齐记忆保持原样，只记远端 ——
+        // 剪贴板里原有的内容与这轮拉取互不干扰
+        state.lastRemoteHash = remote.normalizedHash
+        state.primed = true
+        SCLog.info("拉取 Group：\(dataName) → \(dir.lastPathComponent)/")
+        return Stats(action: .pulled,
+                     note: "已解包多文件到收件箱：\(dir.lastPathComponent)（来自 \(dataName)）",
+                     notify: true)
+    }
+
     // MARK: - 服务器实时推来的内容
 
     /// 处理「服务器主动推来的新剪贴板」（SignalR 的 RemoteProfileChanged）。
@@ -585,6 +754,143 @@ public final class SCSyncEngine {
             return await prime(snap: snap, remote: remote, remoteHash: remote.normalizedHash)
         }
         return await applyRemoteProfile(remote)
+    }
+
+    // MARK: - 文件 / Group 手动推送（M2/M3 入口 B：App 内多选 picker）
+
+    /// 把用户选中的文件推上去。单文件走 File 直传；多文件打成一个 zip 按
+    /// Group 上传 —— 与 Windows 端「多选复制 = Group」语义对齐，对端一次粘贴出全部。
+    /// picker 本身在 UI 层，这里只吃 URL。
+    @discardableResult
+    public func pushFiles(urls: [URL]) async -> Stats {
+        guard !urls.isEmpty else {
+            return Stats(action: .skipped, note: "没有选中任何文件")
+        }
+        if urls.count == 1 {
+            return await pushSingleFile(at: urls[0], fileName: urls[0].lastPathComponent)
+        }
+        guard config.groupSyncEnabled else {
+            return Stats(action: .skipped, note: "多文件（Group）同步未开启（设置里可开）", notify: true)
+        }
+
+        let fm = FileManager.default
+        var names: [String] = []
+        var totalSize: Int64 = 0
+        for url in urls {
+            let attrs = try? fm.attributesOfItem(atPath: url.path)
+            totalSize += (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+            names.append(Self.safeFileName(url.lastPathComponent))
+        }
+        if Set(names).count != names.count {
+            // zip entry 与 groupHash 都拿文件名当路径，重名会互相顶掉，宁可拒掉
+            return Stats(action: .skipped, note: "所选文件存在同名，无法打包（先重命名再试）", notify: true)
+        }
+        if Int(totalSize) > config.maxFileBytes {
+            let mb = Self.megabytes(Int(totalSize))
+            let limit = Self.megabytes(config.maxFileBytes)
+            SCLog.warn("Group 共 \(mb) MB 超过上限 \(limit) MB，未上传")
+            return Stats(action: .skipped,
+                         note: String(format: "共 %.1f MB 超过上限 %.0f MB，未上传（设置里可调）", mb, limit),
+                         notify: true)
+        }
+
+        // groupHash 必须用各文件真实字节算（设计稿 §4.3）：它是跨客户端判等的依据，
+        // zip 只是运输容器，zip 内容 hash 代替不了 entry hash
+        var hashEntries: [(path: String, isDirectory: Bool, size: Int64, sha256: String?)] = []
+        var archivePayload: [(name: String, url: URL)] = []
+        for (url, name) in zip(urls, names) {
+            guard let data = try? Data(contentsOf: url) else {
+                return Stats(action: .failed, note: "读取文件失败：\(name)", notify: true)
+            }
+            hashEntries.append((path: name, isDirectory: false,
+                                size: Int64(data.count), sha256: SCCrypto.sha256Hex(data)))
+            archivePayload.append((name: name, url: url))
+        }
+
+        let zipName = Self.groupZipName()
+        let tempZip = fm.temporaryDirectory.appendingPathComponent(zipName)
+        defer { try? fm.removeItem(at: tempZip) }   // 打包产物只在上传这口气里活着
+        do {
+            try SCZip.archive(files: archivePayload, to: tempZip)
+            let zipData = try Data(contentsOf: tempZip)
+            let profile = SCProfile.group(zipName: zipName,
+                                          fileNames: names,
+                                          content: zipData,
+                                          groupHash: SCProfile.groupHash(entries: hashEntries))
+            // 协议铁律：先 PUT 文件再 PUT JSON，顺序反了服务器 404（设计稿 §1）
+            try await client.putFile(dataName: zipName, content: zipData)
+            try await client.putProfile(profile)
+            state.lastRemoteHash = profile.normalizedHash
+            state.primed = true
+            SCLog.info("推送 Group：\(names.count) 个文件，\(zipName) \(Self.megabytes(zipData.count)) MB")
+            return Stats(action: .pushed,
+                         note: String(format: "已推送 %d 个文件（Group，%.1f MB）",
+                                      names.count, Self.megabytes(zipData.count)))
+        } catch {
+            SCLog.error("Group 上传失败：\(error)")
+            return Stats(action: .failed, note: "Group 上传失败：\(error)", notify: true)
+        }
+    }
+
+    /// 单文件直传（剪贴板路径与 pushFiles 共用）。字节先守卫再进内存，
+    /// 超限文件连读都不用读。
+    private func pushSingleFile(at url: URL, fileName rawName: String) async -> Stats {
+        let fileName = Self.safeFileName(rawName)
+
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        if let known = (attrs?[.size] as? NSNumber)?.int64Value, Int(known) > config.maxFileBytes {
+            let mb = Self.megabytes(Int(known))
+            let limit = Self.megabytes(config.maxFileBytes)
+            SCLog.warn("文件 \(fileName) \(mb) MB 超过上限 \(limit) MB，未上传")
+            return Stats(action: .skipped,
+                         note: String(format: "文件 %.1f MB 超过上限 %.0f MB，未上传（设置里可调）", mb, limit),
+                         notify: true)
+        }
+        guard let data = try? Data(contentsOf: url) else {
+            return Stats(action: .failed, note: "读取文件失败：\(fileName)", notify: true)
+        }
+        if data.count > config.maxFileBytes {
+            let mb = Self.megabytes(data.count)
+            let limit = Self.megabytes(config.maxFileBytes)
+            return Stats(action: .skipped,
+                         note: String(format: "文件 %.1f MB 超过上限 %.0f MB，未上传（设置里可调）", mb, limit),
+                         notify: true)
+        }
+
+        let profile = SCProfile.fileEntry(fileName: fileName, content: data)
+        do {
+            try await client.putFile(dataName: fileName, content: data)
+            try await client.putProfile(profile)
+        } catch {
+            SCLog.error("文件上传失败：\(error)")
+            return Stats(action: .failed, note: "文件上传失败：\(error)", notify: true)
+        }
+        // 来源是剪贴板副本或 picker，不等于剪贴板当前内容：lastLocalDigest 不动；
+        // 只记 lastRemoteHash，下一轮就不会把刚推上去的又当远端新内容拉回来。
+        // （剪贴板来源的 lastLocalDigest 由 pushClipboardFile 补记）
+        state.lastRemoteHash = profile.normalizedHash
+        state.primed = true
+        SCLog.info("推送文件：\(fileName) \(Self.megabytes(data.count)) MB")
+        return Stats(action: .pushed,
+                     note: String(format: "已推送文件 %.1f MB（%@）",
+                                  Self.megabytes(data.count), fileName))
+    }
+
+    /// 文件名清洗：dataName 会进 URL 路径与服务器存储名，传输层拒含分隔符的名字，
+    /// 这里先把任何路径成分剥掉，只剩裸文件名。
+    private static func safeFileName(_ raw: String) -> String {
+        let last = raw.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? ""
+        return last.isEmpty ? "file" : last
+    }
+
+    /// 上游 Group 传输名 `File_{时间戳}_{随机}.zip`（CreateNewDataFileName）。
+    /// 随机段刻意短（6 位 hex）：只为避免同一秒两次推送撞名，不作安全用途。
+    private static func groupZipName(at date: Date = Date()) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let random = String(format: "%06X", UInt32.random(in: 0..<0xFFFFFF))
+        return "File_\(f.string(from: date))_\(random).zip"
     }
 
     #endif  // canImport(UIKit)

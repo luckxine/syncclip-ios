@@ -136,9 +136,84 @@ public struct SCProfile: Codable, Equatable {
         attachment(type: .image, fileName: fileName, content: content)
     }
 
-    /// 单文件 profile（M2 用，形状先定好）
+    /// 单文件 profile（M2）。与图片共用 attachment 形状：text 存文件名，
+    /// dataName 就是原文件名（上游 FileProfile.ToProfileDto 的约定）。
     public static func fileEntry(fileName: String, content: Data) -> SCProfile {
         attachment(type: .file, fileName: fileName, content: content)
+    }
+
+    /// Group profile（M3）：多文件打成一个 zip 作为传输体。
+    ///
+    /// text = 文件名清单 `\n` 连接（上游 GetDisplayText 的形态，收件箱页直接拿它展示）；
+    /// dataName = zip 名；transferDataHash = zip 字节的 SHA-256。
+    /// hash 必须由调用方传入**按各文件真实字节算出的 groupHash** ——
+    /// 它是跨客户端判等（「远端和我本地是不是同一批文件」）的唯一依据，
+    /// Windows 端对同一批文件会算出同样的值；拿 zip 内容 hash 顶替的话，
+    /// 对端每次都会当成新内容重复下载甚至回推，直接破坏互通。
+    ///
+    /// size 记 zip 字节数（STORE 打包下与文件总和只差 zip 头部开销）。
+    /// 上游 DTO 的 Size 语义是「文件字节数之和」，接收方只用它做展示与
+    /// 超限判断，两种口径在 15MB 上限下不产生行为差异 —— 已知轻微偏差。
+    public static func group(zipName: String,
+                            fileNames: [String],
+                            content: Data,
+                            groupHash hash: String) -> SCProfile {
+        SCProfile(type: .group,
+                  hash: hash,
+                  text: fileNames.joined(separator: "\n"),
+                  hasData: true,
+                  dataName: zipName,
+                  transferDataHash: SCCrypto.sha256Hex(content),
+                  size: Int64(content.count),
+                  syncedAt: nil)
+    }
+
+    // MARK: - Group hash（docs/Hash.md §3，与上游逐条对齐）
+
+    /// GroupProfile 的 profile hash。调用方负责把 entry 准备成规范形态：
+    /// path 是相对根的路径、分隔符统一 `/`、目录以 `/` 结尾。
+    ///
+    /// 与上游 docs/Hash.md §3 的逐条对应（上游实现在 GroupProfile.CaclHashAndSize
+    /// + GroupEntry.ToEntryStringAsync，两边都核对过）：
+    ///
+    ///   §3.1 entry 收集：上游以输入文件的父目录为根取相对路径，分隔符统一 `/`，
+    ///        目录 EntryName 以 `/` 结尾 —— 本函数不重复做这件事（引擎侧只有
+    ///        扁平文件清单，天然满足；将来支持文件夹时由收集方构造好再传入）
+    ///
+    ///   §3.2 排序：按 EntryName 的 **UTF-8 字节数组** 字典序升序。
+    ///        刻意不用 Swift String 的 `<`（那是 Unicode 规范等价比较，
+    ///        组合字符的不同写法会被判相等），`utf8.lexicographicallyPrecedes`
+    ///        才是逐字节比较，与上游 ByteArrayComparer 一致
+    ///
+    ///   §3.3 每条 entry 的 hash 输入串（`\0` = 单个 0x00 字节，UTF-8 编码后占 1 字节）：
+    ///        目录：`D|{entryName}\0`
+    ///        文件：`F|{entryName}|{length}|{contentHash 大写hex}\0`
+    ///        文件的 contentHash 为空时上游输出空串（GroupEntry.HashTask 为 null
+    ///        → string.Empty），这里照抄 `(sha256 ?? "")` 的行为
+    ///
+    ///   §3.4 哈希：全部 entry 输入串按序拼接 → UTF-8 → SHA-256 → 大写 hex
+    ///        （SCCrypto.sha256Hex 已是大写）
+    ///
+    /// entry 为空时结果是 SHA256("")，与上游「无输入文件」分支一致。
+    public static func groupHash(entries: [(path: String,
+                                            isDirectory: Bool,
+                                            size: Int64,
+                                            sha256: String?)]) -> String {
+        let ordered = entries.sorted {
+            $0.path.utf8.lexicographicallyPrecedes($1.path.utf8)
+        }
+        var combined = Data()
+        for e in ordered {
+            let line: String
+            if e.isDirectory {
+                line = "D|\(e.path)\0"
+            } else {
+                let contentHash = (e.sha256 ?? "").uppercased()
+                line = "F|\(e.path)|\(e.size)|\(contentHash)\0"
+            }
+            combined.append(contentsOf: line.utf8)
+        }
+        return SCCrypto.sha256Hex(combined)
     }
 
     private static func attachment(type: Kind, fileName: String, content: Data) -> SCProfile {

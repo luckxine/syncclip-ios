@@ -25,6 +25,17 @@ public struct SCAppSettings: Codable, Equatable {
     public var imageSyncEnabled: Bool
     /// 单张图片大小上限（MB）。103 隧道实测 15MB 稳 / 21MB 断，默认取安全值。
     public var maxImageMB: Int
+    /// 单文件双向同步（M2）。默认开。
+    public var fileSyncEnabled: Bool
+    /// 多文件（Group）双向同步（M3）。默认开。
+    public var groupSyncEnabled: Bool
+    /// 拉取单文件后同时把 file-url 引用写进剪贴板（P3 探针项，置信中等）。
+    /// 默认关：探针过了才该开（设计稿 §4.2）。
+    public var fileClipboardWriteEnabled: Bool
+    /// 文件 / Group 的大小上限（MB）。与图片同取 15MB（同一隧道同一实测，设计稿 §1.5）。
+    public var maxFileMB: Int
+    /// 收件箱保留天数，超龄自动清理。
+    public var inboxKeepDays: Int
     /// 订阅服务器的实时推送（SyncClipboard 官方服务器才有，WebDAV/S3 没 Hub）。
     /// 开着的话 PC 上一复制，手机上几乎是立刻就变；不依赖它也能靠轮询工作。
     public var pushEnabled: Bool
@@ -39,6 +50,11 @@ public struct SCAppSettings: Codable, Equatable {
                 keepAliveEnabled: Bool = true,
                 imageSyncEnabled: Bool = false,
                 maxImageMB: Int = 15,
+                fileSyncEnabled: Bool = true,
+                groupSyncEnabled: Bool = true,
+                fileClipboardWriteEnabled: Bool = false,
+                maxFileMB: Int = 15,
+                inboxKeepDays: Int = 14,
                 pushEnabled: Bool = true,
                 verboseLogging: Bool = false) {
         self.servers = servers
@@ -50,6 +66,11 @@ public struct SCAppSettings: Codable, Equatable {
         self.keepAliveEnabled = keepAliveEnabled
         self.imageSyncEnabled = imageSyncEnabled
         self.maxImageMB = maxImageMB
+        self.fileSyncEnabled = fileSyncEnabled
+        self.groupSyncEnabled = groupSyncEnabled
+        self.fileClipboardWriteEnabled = fileClipboardWriteEnabled
+        self.maxFileMB = maxFileMB
+        self.inboxKeepDays = inboxKeepDays
         self.pushEnabled = pushEnabled
         self.verboseLogging = verboseLogging
     }
@@ -65,6 +86,11 @@ public struct SCAppSettings: Codable, Equatable {
         keepAliveEnabled = try c.decodeIfPresent(Bool.self, forKey: .keepAliveEnabled) ?? true
         imageSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .imageSyncEnabled) ?? false
         maxImageMB = try c.decodeIfPresent(Int.self, forKey: .maxImageMB) ?? 15
+        fileSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .fileSyncEnabled) ?? true
+        groupSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .groupSyncEnabled) ?? true
+        fileClipboardWriteEnabled = try c.decodeIfPresent(Bool.self, forKey: .fileClipboardWriteEnabled) ?? false
+        maxFileMB = try c.decodeIfPresent(Int.self, forKey: .maxFileMB) ?? 15
+        inboxKeepDays = try c.decodeIfPresent(Int.self, forKey: .inboxKeepDays) ?? 14
         pushEnabled = try c.decodeIfPresent(Bool.self, forKey: .pushEnabled) ?? true
         verboseLogging = try c.decodeIfPresent(Bool.self, forKey: .verboseLogging) ?? false
 
@@ -196,7 +222,11 @@ public struct SCAppSettings: Codable, Equatable {
                         startupSyncRaw: startupSync,
                         conflictRaw: conflictResolution,
                         imageSyncEnabled: imageSyncEnabled,
-                        maxImageBytes: maxImageMB * 1024 * 1024)
+                        maxImageBytes: maxImageMB * 1024 * 1024,
+                        fileSyncEnabled: fileSyncEnabled,
+                        groupSyncEnabled: groupSyncEnabled,
+                        fileClipboardWriteEnabled: fileClipboardWriteEnabled,
+                        maxFileBytes: maxFileMB * 1024 * 1024)
     }
 
     public var isConfigured: Bool { (try? toConfig()) != nil }

@@ -53,6 +53,20 @@ public struct SCConfig: Equatable {
     /// （设计稿 §1.5），frp 修复并复测前默认 15MB。
     public var maxImageBytes: Int
 
+    /// 单文件同步（M2）。默认开。
+    public var fileSyncEnabled: Bool
+
+    /// 多文件（Group）同步（M3）。默认开。
+    public var groupSyncEnabled: Bool
+
+    /// 拉取单文件后是否把 file-url 引用写进剪贴板（P3 探针项）。
+    /// 默认关：跨 App 能不能粘出文件由探针把关（设计稿 §4.2）。
+    public var fileClipboardWriteEnabled: Bool
+
+    /// 文件 / Group 的大小上限（字节）。与图片共用 15MB 的实测安全值
+    /// （设计稿 §1.5）；Group 按各文件字节总和计。
+    public var maxFileBytes: Int
+
     public enum StartupSync: String, Codable, CaseIterable, Identifiable {
         case pull, push, none
         public var id: String { rawValue }
@@ -70,13 +84,21 @@ public struct SCConfig: Equatable {
                 startupSync: StartupSync = .pull,
                 conflictResolution: SCConflictResolution = .newest,
                 imageSyncEnabled: Bool = false,
-                maxImageBytes: Int = 15 * 1024 * 1024) {
+                maxImageBytes: Int = 15 * 1024 * 1024,
+                fileSyncEnabled: Bool = true,
+                groupSyncEnabled: Bool = true,
+                fileClipboardWriteEnabled: Bool = false,
+                maxFileBytes: Int = 15 * 1024 * 1024) {
         self.profile = profile
         self.pollInterval = max(0.5, pollInterval)
         self.startupSync = startupSync
         self.conflictResolution = conflictResolution
         self.imageSyncEnabled = imageSyncEnabled
         self.maxImageBytes = maxImageBytes
+        self.fileSyncEnabled = fileSyncEnabled
+        self.groupSyncEnabled = groupSyncEnabled
+        self.fileClipboardWriteEnabled = fileClipboardWriteEnabled
+        self.maxFileBytes = maxFileBytes
     }
 
     /// 从已填好的 server profile 构造（校验交给 profile）
@@ -85,13 +107,21 @@ public struct SCConfig: Equatable {
                 startupSyncRaw: String,
                 conflictRaw: String,
                 imageSyncEnabled: Bool = false,
-                maxImageBytes: Int = 15 * 1024 * 1024) {
+                maxImageBytes: Int = 15 * 1024 * 1024,
+                fileSyncEnabled: Bool = true,
+                groupSyncEnabled: Bool = true,
+                fileClipboardWriteEnabled: Bool = false,
+                maxFileBytes: Int = 15 * 1024 * 1024) {
         self.init(profile: profile,
                   pollInterval: pollInterval,
                   startupSync: StartupSync(rawValue: startupSyncRaw) ?? .pull,
                   conflictResolution: SCConflictResolution(rawValue: conflictRaw) ?? .newest,
                   imageSyncEnabled: imageSyncEnabled,
-                  maxImageBytes: maxImageBytes)
+                  maxImageBytes: maxImageBytes,
+                  fileSyncEnabled: fileSyncEnabled,
+                  groupSyncEnabled: groupSyncEnabled,
+                  fileClipboardWriteEnabled: fileClipboardWriteEnabled,
+                  maxFileBytes: maxFileBytes)
     }
 
     // MARK: - 便捷访问
