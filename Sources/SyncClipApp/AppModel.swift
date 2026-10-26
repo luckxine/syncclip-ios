@@ -110,7 +110,7 @@ final class AppModel: ObservableObject {
 
     // ---- M2-M5 文件同步 ----
     /// 收件箱列表（远端拉下来的文件/目录），收件箱页直接展示这份
-    @Published var inboxItems: [InboxItem] = []
+    @Published var inboxItems: [SCInbox.InboxItem] = []
     /// 远端当前内容是不是文件/文件组 —— 首页「去收件箱查看」按钮据此显隐
     @Published var remoteIsFileLike = false
 

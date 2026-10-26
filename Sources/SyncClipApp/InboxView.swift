@@ -15,7 +15,7 @@ struct InboxView: View {
     /// 免得依赖引擎侧类型给不给 Identifiable。
     @State private var shareURL: URL?
     /// 待删除项：目录删除不可逆，先确认一下再动手
-    @State private var pendingDelete: InboxItem?
+    @State private var pendingDelete: SCInbox.InboxItem?
     @State private var showCleanConfirm = false
 
     var body: some View {
@@ -41,17 +41,13 @@ struct InboxView: View {
                 }
             }
             .onAppear { model.refreshInbox() }
-            .sheet(isPresented: Binding(
-                get: { shareURL != nil },
-                set: { if !$0 { shareURL = nil } })) {
+            .sheet(isPresented: shareSheetBinding) {
                 if let url = shareURL {
                     ShareSheet(items: [url])
                 }
             }
             .confirmationDialog("删除「\(pendingDelete?.name ?? "")」？",
-                                isPresented: Binding(
-                                    get: { pendingDelete != nil },
-                                    set: { if !$0 { pendingDelete = nil } }),
+                                isPresented: deleteDialogBinding,
                                 titleVisibility: .visible) {
                 Button("删除", role: .destructive) {
                     if let item = pendingDelete {
@@ -76,6 +72,16 @@ struct InboxView: View {
 
     // MARK: - 列表
 
+    // 把两个手写 Binding 拆成计算属性：缩短 body 的表达式链，免得
+    // 类型检查器在大视图里超时
+    private var shareSheetBinding: Binding<Bool> {
+        Binding(get: { shareURL != nil }, set: { if !$0 { shareURL = nil } })
+    }
+
+    private var deleteDialogBinding: Binding<Bool> {
+        Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })
+    }
+
     private var list: some View {
         List {
             Section {
@@ -91,7 +97,7 @@ struct InboxView: View {
         .refreshable { model.refreshInbox() }
     }
 
-    private func row(_ item: InboxItem) -> some View {
+    private func row(_ item: SCInbox.InboxItem) -> some View {
         HStack(spacing: SCToken.Space.m) {
             Image(systemName: item.isDirectory ? "folder.fill" : "doc.fill")
                 .font(.system(size: 15))
@@ -130,7 +136,7 @@ struct InboxView: View {
     }
 
     /// 目录显示子项数（InboxItem 只带自身属性，子项数现场数一下），文件显示大小。
-    private func subtitle(for item: InboxItem) -> String {
+    private func subtitle(for item: SCInbox.InboxItem) -> String {
         if item.isDirectory {
             let n = (try? FileManager.default.contentsOfDirectory(atPath: item.url.path))?.count ?? 0
             return "\(n) 项 · \(HomeView.relative(item.addedAt))"

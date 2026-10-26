@@ -331,7 +331,7 @@ struct DiagnosticsView: View {
         } else {
             appexEntries = []
         }
-        keyboardLog = AppGroupStore.isAvailable ? AppGroupStore.readKeyboardLog(30) : []
+        keyboardLog = AppGroupStore.isAvailable ? AppGroupStore.readKeyboardLog(limit: 30) : []
     }
 
     // MARK: - 后台保活
