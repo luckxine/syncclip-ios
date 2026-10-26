@@ -296,7 +296,13 @@ struct DiagnosticsView: View {
         SCCard("K1/K3 · 键盘存活",
                footnote: "键盘扩展每次被系统拉起都往 App Group 写一行心跳，"
                + "这里就是原始记录 —— 没记录 = 键盘从没被拉起过；"
-               + "相邻两行的时间差就是 K3 要量的「切走后还活多久」。") {
+               + "相邻两行的时间差就是 K3 要量的「切走后还活多久」。\n\n"
+               + "kbsync 开头的行是「键盘自动同步」的运行轨迹（需已开完全访问）："
+               + "kbsync enter 说明键盘一弹就触发了；"
+               + "kbsync round 说明配置拿到了、真开跑；"
+               + "kbsync push img/file ok 是推上去了；"
+               + "kbsync pull ok 是拉下来了；"
+               + "而「kbsync push: 剪贴板里没有图片/文件」就是键盘读不到剪贴板的分水岭。") {
             if !AppGroupStore.isAvailable {
                 Text("App Group 不可用：键盘读不到主 App 写的任何数据（K1 未过，或安装时没带上权限组）。"
                      + "主 App 的同步不受影响。")
