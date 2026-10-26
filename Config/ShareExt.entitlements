@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>application-identifier</key>
+	<string>TROLLTROLL.com.cxk.syncclip.share</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>TROLLTROLL</string>
+
+	<!-- 与宿主 App 同组的 App Group：读主 App 导出的服务器配置、写共享历史。
+	     TrollStore 下它是否被系统承认是 K1/P4 探针要回答的问题；代码侧
+	     （AppGroupStore.isAvailable）已按"不可用就明确降级"处理。 -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.cxk.syncclip</string>
+	</array>
+</dict>
+</plist>

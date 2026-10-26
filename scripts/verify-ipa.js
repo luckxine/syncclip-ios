@@ -2,12 +2,16 @@
 // 确认 entitlement 真的签进去了。
 //
 //   node scripts/verify-ipa.js dist/SyncClipboard_1.0.0_arm64.ipa
+//   node scripts/verify-ipa.js dist/SyncClipboard_1.0.0_arm64.ipa --profile app-full
 //   node scripts/verify-ipa.js dist/PasteProbe_1.0.0_arm64.ipa --profile probe
 //
-// 两个档（profile）：
-//   app    —— 剪贴板同步 App：四条剪贴板 entitlement + UIBackgroundModes=audio
-//   probe  —— NE 探针：宿主 App + PlugIns 里的隧道 appex，两组 entitlement，
-//             并额外验证 appex 的入口点真的是 _NSExtensionMain
+// 三个档（profile）：
+//   app      —— 剪贴板同步 App 本体：四条剪贴板 entitlement + UIBackgroundModes=audio
+//               （selftest 造的最小包也走这个档，所以不能要求 PlugIns 存在）
+//   app-full —— build-app.sh 的完整包：app 档全部检查 + PlugIns 里的分享/键盘
+//               两个 appex（结构、NSExtension 字段、entitlement、入口点）
+//   probe    —— NE 探针：宿主 App + PlugIns 里的隧道 appex，两组 entitlement，
+//               并额外验证 appex 的入口点真的是 _NSExtensionMain
 //
 // 为什么非要验 entitlement：整个方案唯一的命门就是「读剪贴板不弹提示」。
 // 这件事只取决于二进制里有没有那几条 entitlement，而"我签名命令跑了"和
@@ -39,18 +43,58 @@ const NE_ENTITLEMENTS = [
     'com.apple.security.application-groups',
 ];
 
+const APP_GROUP_ENTITLEMENT = 'com.apple.security.application-groups';
+
+const APP_PROFILE = {
+    label: '剪贴板同步 App',
+    bundleId: 'com.cxk.syncclip',
+    execName: 'SyncClipboard',
+    maxMinOS: 15.5,
+    urlScheme: 'syncclip',
+    requireBackgroundModes: ['audio'],
+    forbidBackgroundModes: false,
+    requiredEntitlements: PASTEBOARD_ENTITLEMENTS,
+    icons: true,
+    appexList: [],
+};
+
 const PROFILES = {
-    app: {
-        label: '剪贴板同步 App',
-        bundleId: 'com.cxk.syncclip',
-        execName: 'SyncClipboard',
-        maxMinOS: 15.5,
-        urlScheme: 'syncclip',
-        requireBackgroundModes: ['audio'],
-        forbidBackgroundModes: false,
-        requiredEntitlements: PASTEBOARD_ENTITLEMENTS,
-        icons: true,
-        appex: null,
+    app: APP_PROFILE,
+    // build-app.sh 打的完整包：在 app 档基础上追加两个 appex 的完整校验。
+    // share 的 activationRuleKeys / keyboard 的 requestsOpenAccess 是
+    // 「NSExtension 字段完整可被 PlugInKit 识别」的直接验证项。
+    'app-full': {
+        ...APP_PROFILE,
+        label: '剪贴板同步 App（含 M4/M5 扩展）',
+        // 主 App 自己也带 App Group（Config/SyncClipboard.entitlements）：
+        // 没有它，主 App 写的 config.json 落不进共享容器，扩展永远读不到
+        requiredEntitlements: PASTEBOARD_ENTITLEMENTS.concat(APP_GROUP_ENTITLEMENT),
+        appexList: [
+            {
+                dir: 'PlugIns/ShareExt.appex',
+                binName: 'ShareExt',
+                bundleId: 'com.cxk.syncclip.share',
+                packageType: 'XPC!',
+                extensionPoint: 'com.apple.share-services',
+                principalClass: 'ShareExt.ShareViewController',
+                activationRuleKeys: [
+                    'NSExtensionActivationSupportsTextWithMaxCount',
+                    'NSExtensionActivationSupportsImageWithMaxCount',
+                    'NSExtensionActivationSupportsFileWithMaxCount',
+                ],
+                requiredEntitlements: [APP_GROUP_ENTITLEMENT],
+            },
+            {
+                dir: 'PlugIns/KeyboardExt.appex',
+                binName: 'KeyboardExt',
+                bundleId: 'com.cxk.syncclip.keyboard',
+                packageType: 'XPC!',
+                extensionPoint: 'com.apple.keyboard-service',
+                principalClass: 'KeyboardExt.KeyboardViewController',
+                requestsOpenAccess: true,
+                requiredEntitlements: [APP_GROUP_ENTITLEMENT].concat(PASTEBOARD_ENTITLEMENTS),
+            },
+        ],
     },
     probe: {
         label: 'NE 可行性探针',
@@ -64,15 +108,17 @@ const PROFILES = {
         forbidBackgroundModes: true,
         requiredEntitlements: PASTEBOARD_ENTITLEMENTS.concat(NE_ENTITLEMENTS),
         icons: true,
-        appex: {
-            dir: 'PlugIns/PasteProbeTunnel.appex',
-            binName: 'PasteProbeTunnel',
-            bundleId: 'com.cxk.pasteprobe.tunnel',
-            packageType: 'XPC!',
-            extensionPoint: 'com.apple.networkextension.packet-tunnel',
-            principalClass: 'PasteProbeTunnel.ProbeTunnelProvider',
-            requiredEntitlements: PASTEBOARD_ENTITLEMENTS.concat(NE_ENTITLEMENTS),
-        },
+        appexList: [
+            {
+                dir: 'PlugIns/PasteProbeTunnel.appex',
+                binName: 'PasteProbeTunnel',
+                bundleId: 'com.cxk.pasteprobe.tunnel',
+                packageType: 'XPC!',
+                extensionPoint: 'com.apple.networkextension.packet-tunnel',
+                principalClass: 'PasteProbeTunnel.ProbeTunnelProvider',
+                requiredEntitlements: PASTEBOARD_ENTITLEMENTS.concat(NE_ENTITLEMENTS),
+            },
+        ],
     },
 };
 
@@ -87,7 +133,7 @@ const profileName = profileIdx >= 0 ? (argv[profileIdx + 1] || 'app') : 'app';
 const profile = PROFILES[profileName];
 
 if (!file) {
-    console.error('用法：node scripts/verify-ipa.js <path/to.ipa> [--profile app|probe]');
+    console.error('用法：node scripts/verify-ipa.js <path/to.ipa> [--profile app|app-full|probe]');
     process.exit(2);
 }
 if (!profile) {
@@ -456,14 +502,17 @@ if (execEntry) {
 }
 
 // ===========================================================================
-// appex（probe 档）
+// appex（app-full / probe 档）：列表逐个验，结构与 probe 档同一套判据
 // ===========================================================================
 
-if (profile.appex) {
-    const spec = profile.appex;
+if (profile.appexList && profile.appexList.length > 0) {
+    console.log('\n[appex（PlugIns）]');
+}
+
+for (const spec of (profile.appexList || [])) {
     const appexPrefix = `Payload/${appPrefix}/${spec.dir}/`;
 
-    console.log('\n[appex（PlugIns）]');
+    console.log(`\n  -- ${spec.dir}`);
 
     check(entries.some((e) => e.name.startsWith(appexPrefix)), `appex 目录存在（${spec.dir}）`);
 
@@ -488,6 +537,18 @@ if (profile.appex) {
               t.str('NSExtensionPointIdentifier'));
         check(t.str('NSExtensionPrincipalClass') === spec.principalClass,
               `NSExtensionPrincipalClass = ${spec.principalClass}`, t.str('NSExtensionPrincipalClass'));
+
+        // 分享扩展：ActivationRule 必须是 dict 形态（TRUEPREDICATE 会被 App Store
+        // 拒，TrollStore 虽不审，但 PlugInKit 对 dict 规则的匹配行为才是我们要的）
+        for (const key of (spec.activationRuleKeys || [])) {
+            check(new RegExp(`<key>\\s*${key}\\s*</key>\\s*<integer>`).test(plist),
+                  `ActivationRule 含 ${key}`);
+        }
+        // 键盘扩展：RequestsOpenAccess=true 是「允许完全访问」开关的前提
+        if (spec.requestsOpenAccess) {
+            check(new RegExp('<key>\\s*RequestsOpenAccess\\s*</key>\\s*<true\\s*/>').test(plist),
+                  'RequestsOpenAccess = true');
+        }
 
         const minOS = parseFloat(t.str('MinimumOSVersion') || '0');
         check(minOS > 0 && minOS <= profile.maxMinOS, `appex MinimumOSVersion ≤ ${profile.maxMinOS}`,

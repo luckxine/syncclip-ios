@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleDisplayName</key>
+	<string>剪贴板同步键盘</string>
+	<key>CFBundleExecutable</key>
+	<string>KeyboardExt</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.cxk.syncclip.keyboard</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>KeyboardExt</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<!-- 与主 App Config/Info.plist 手工对齐；TrollStore 不校验一致性，但错版本
+	     会让"哪个包带了哪个扩展"在排障时说不清 -->
+	<key>CFBundleShortVersionString</key>
+	<string>1.3.0</string>
+	<key>CFBundleVersion</key>
+	<string>6</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>iPhoneOS</string>
+	</array>
+	<key>MinimumOSVersion</key>
+	<string>15.0</string>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+	</array>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+
+	<!--
+	  标准 keyboard-service 扩展键。RequestsOpenAccess=true 是"允许完全访问"
+	  开关的前提：不开它，用户在设置里根本看不到那档开关，键盘就永远停留在
+	  只读文本的模式（这是双模式设计的下限，不是故障）。
+	  NSExtensionPrincipalClass 沿用 PasteProbeTunnel 核对过的「模块名.类名」写法。
+	-->
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.keyboard-service</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>KeyboardExt.KeyboardViewController</string>
+		<key>RequestsOpenAccess</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
