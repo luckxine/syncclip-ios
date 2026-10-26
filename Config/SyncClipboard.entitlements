@@ -16,6 +16,14 @@
 	  只有真机上发现读剪贴板仍然弹提示时，才按 docs/verification.md 的
 	  「逐条删变量」流程往上加，别一次堆一堆。
 	-->
+	<!-- M4/M5：主 App 与分享/键盘扩展共享配置与历史的容器。TrollStore 下
+	     App Group 是否真的可用由 K1/P4 探针回答；代码侧一切读写都以
+	     AppGroupStore.isAvailable==false 优雅降级，不会因为这条 entitlement
+	     不生效而崩溃。 -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.cxk.syncclip</string>
+	</array>
 	<key>com.apple.private.webkit.pasteboard</key>
 	<true/>
 	<key>com.apple.private.pasteboard.check-pasteboard</key>

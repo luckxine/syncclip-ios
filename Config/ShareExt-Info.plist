@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleDisplayName</key>
+	<string>推送到剪贴板服务器</string>
+	<key>CFBundleExecutable</key>
+	<string>ShareExt</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.cxk.syncclip.share</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>ShareExt</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<!-- 与主 App Config/Info.plist 手工对齐；TrollStore 不校验一致性，但错版本
+	     会让"哪个包带了哪个扩展"在排障时说不清 -->
+	<key>CFBundleShortVersionString</key>
+	<string>1.3.0</string>
+	<key>CFBundleVersion</key>
+	<string>6</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>iPhoneOS</string>
+	</array>
+	<key>MinimumOSVersion</key>
+	<string>15.0</string>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+	</array>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+
+	<!--
+	  NSExtensionPrincipalClass 的写法沿用 PasteProbeTunnel-Info.plist 核对过的
+	  结论：「模块名.类名」（模块名必须与 Package.swift 里的 target 名一致），
+	  NSExtensionMain 拿它去 NSClassFromString。
+
+	  ActivationRule 用 dictionary 形态并刻意只收单个（MaxCount=1）：多选的
+	  合并上传是 M3 Group 的事，这一版先把"单件可靠"做扎实。
+	-->
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.share-services</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>ShareExt.ShareViewController</string>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>NSExtensionActivationRule</key>
+			<dict>
+				<key>NSExtensionActivationSupportsTextWithMaxCount</key>
+				<integer>1</integer>
+				<key>NSExtensionActivationSupportsImageWithMaxCount</key>
+				<integer>1</integer>
+				<key>NSExtensionActivationSupportsFileWithMaxCount</key>
+				<integer>1</integer>
+			</dict>
+		</dict>
+	</dict>
+</dict>
+</plist>

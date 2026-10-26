@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>application-identifier</key>
+	<string>TROLLTROLL.com.cxk.syncclip.keyboard</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>TROLLTROLL</string>
+
+	<!-- 与宿主 App 同组的 App Group：读共享历史与服务器配置、写 K3 存活日志。
+	     TrollStore 下它是否被系统承认由 K1/P4 探针回答；代码侧
+	     （AppGroupStore.isAvailable）已按"不可用就明确降级"处理。 -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.cxk.syncclip</string>
+	</array>
+
+	<!--
+	  键盘的核心动作之一是"把服务器上的图片/文件写回剪贴板"（写剪贴板本身
+	  还需要用户在设置里开完全访问）。四条私有 pasteboard entitlement 与
+	  宿主 App 相同 —— PasteProbeTunnel 先例已经验证 appex 带这组 entitlement
+	  会被 ldid 原样签进二进制并被 TrollStore 安装承认。
+	-->
+	<key>com.apple.private.webkit.pasteboard</key>
+	<true/>
+	<key>com.apple.private.pasteboard.check-pasteboard</key>
+	<true/>
+	<key>com.apple.Pasteboard.background-access</key>
+	<true/>
+	<key>com.apple.Pasteboard.paste-unchecked</key>
+	<true/>
+</dict>
+</plist>

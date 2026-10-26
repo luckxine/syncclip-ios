@@ -274,6 +274,26 @@ v2 把它泛化为全类型，分阶段落地，设计全稿见 `D:/poxian/syncc
 **待做：** M2 单文件+收件箱 → M3 Group(zip) → M4 分享菜单（依赖 TrollStore appex 探针 P4）→
 M5 键盘取用面板（双模式）→ M6 历史记录。frp 服务器端修复（frpc poolCount=10）待执行。
 
+### M4/M5 扩展（已落地）
+
+包里带两个 appex，都在 `Payload/SyncClipboard.app/PlugIns/`，照 PasteProbeTunnel 验过的模式
+（SwiftPM `unsafeFlags` + `-e _NSExtensionMain`，`build-app.sh` 组包 + ldid 逐个签名）：
+
+- **分享扩展**（`Sources/ShareExt/`，系统分享菜单里的「推送到剪贴板服务器」）：单件
+  文本/图片/文件 → 读 App Group 里主 App 导出的配置 → SCClient 直传（附件先
+  `putFile` 再 `putProfile`；HEIC 转 JPEG 对齐主 App策略；超过主 App 设的大小上限明确拒绝）。
+  没导出配置时提示「打开主 App 一次」—— 分享面板里 `open(URL:)` 常被系统拒绝，
+  降级就是提示用户手动切 App。
+- **键盘扩展**（`Sources/KeyboardExt/`，设置里添加）：双模式 —— 未开完全访问只列共享
+  历史文本（点击 insertText）；开了完全访问追加「最新」按钮（拉服务器当前内容：文本直接
+  输入，图片/文件 getFile 后写剪贴板提示「已复制，去粘贴」），历史里的图片/文件条目也可
+  点击取回。每 30 秒一行心跳进 keyboard.log（K3 探针，量化键盘存活时长）。
+- **AppGroupStore**（`Sources/SyncClipApp/AppGroupStore.swift`，单文件库模块 `SyncClipApp`）：
+  主 App 与扩展共享的一切落盘：`config.json`（整份设置导出，密码明文，私有设备可接受）、
+  `history.jsonl`（50 条环形）、`keyboard.log`（200 条环形）。`isAvailable` 做真实写探针
+  （TrollStore 下 App Group 能否被承认是 K1/P4 的问题），一切失败路径都静默返回空/false，
+  UI 按明确文案降级。
+
 ---
 
 ## 八、越狱路线（保留）
