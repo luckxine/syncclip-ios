@@ -52,6 +52,9 @@ final class KeyboardSyncCoordinator {
     /// 键盘唤起时调。已开完全访问才会真跑，没开时静默（VC 会在状态条提示）。
     /// 全程不阻塞 UI——`Task.detached` 把活儿丢后台队列，VC 的面板渲染不等它。
     func syncOnAppear(hasFullAccess: Bool) {
+        // 这三行是「键盘自动同步究竟跑没跑」的唯一真机证据。
+        // 用户的判断方法是：主 App → 诊断 → 键盘日志，看有没有 kbsync 开头的行。
+        AppGroupStore.appendKeyboardLog("kbsync enter fullAccess=\(hasFullAccess) inFlight=\(inFlight)")
         guard hasFullAccess else { return }
         guard !inFlight else { return }
         inFlight = true
@@ -65,19 +68,25 @@ final class KeyboardSyncCoordinator {
     // MARK: - 一轮双向同步
 
     private func runOneRound() async {
-        guard let (_, settings) = AppGroupStore.loadConfig() else { return }
+        guard let (_, settings) = AppGroupStore.loadConfig() else {
+            AppGroupStore.appendKeyboardLog("kbsync skip: App Group 里没有配置（主 App 里先配置并同步一次）")
+            return
+        }
         let config: SCConfig
         do {
             config = try settings.toConfig()
         } catch {
+            AppGroupStore.appendKeyboardLog("kbsync skip: 配置不完整 \(error)")
             return
         }
         let client: SCClient
         do {
             client = try SCClient(config: config)
         } catch {
+            AppGroupStore.appendKeyboardLog("kbsync skip: 建客户端失败 \(error)")
             return
         }
+        AppGroupStore.appendKeyboardLog("kbsync round: server=\(config.serverType.rawValue)")
 
         // 先推本地（如果有新内容），再拉远端——顺序上"推先于拉"：
         // 如果先拉，刚写进剪贴板的内容会被这一轮推当成"新内容"又推回去，空转。
@@ -111,9 +120,15 @@ final class KeyboardSyncCoordinator {
                 data = jpeg; uti = "public.jpeg"; isDecoded = true
             }
             // 超限不推（上游也有上限，超了会被拒）
-            if data.count > config.maxImageBytes { return }
+            if data.count > config.maxImageBytes {
+                AppGroupStore.appendKeyboardLog("kbsync push img skip: \(data.count) > 上限 \(config.maxImageBytes)")
+                return
+            }
             let digest = "I:" + SCCrypto.sha256Hex(data)
-            if digest == state.lastPushedDigest { return }
+            if digest == state.lastPushedDigest {
+                AppGroupStore.appendKeyboardLog("kbsync push img skip: 与上次推的相同")
+                return
+            }
 
             let fileName = "img-\(digest.prefix(16)).\(Self.ext(forUTI: uti))"
             let profile = SCProfile.image(fileName: fileName, content: data)
@@ -123,9 +138,11 @@ final class KeyboardSyncCoordinator {
                 state.lastPushedDigest = digest
                 state.lastPushedAt = Date()
                 saveState(state)
+                AppGroupStore.appendKeyboardLog("kbsync push img ok \(data.count)B \(fileName)")
                 await Self.touchStatus(label: statusLabel,
                                        text: "已推送图片\(isDecoded ? "（转码）" : "")")
             } catch {
+                AppGroupStore.appendKeyboardLog("kbsync push img FAIL \(error)")
                 await Self.touchStatus(label: statusLabel, text: "推送图片失败")
             }
             return
@@ -138,13 +155,17 @@ final class KeyboardSyncCoordinator {
                     .data(forPasteboardType: SCPasteboard.fileURLUTI),
                   !urlData.isEmpty else { return }
             let digest = "F:" + SCCrypto.sha256Hex(urlData)
-            if digest == state.lastPushedDigest { return }
+            if digest == state.lastPushedDigest {
+                AppGroupStore.appendKeyboardLog("kbsync push file skip: 与上次推的相同")
+                return
+            }
 
             // 真正拷出文件字节（协调读/直接读兜底），贵，只推时做
             let copied: SCPasteboard.CopiedFile
             do {
                 copied = try await SCPasteboard.readCopiedFile(timeout: 15)
             } catch {
+                AppGroupStore.appendKeyboardLog("kbsync push file FAIL 读剪贴板: \(error)")
                 await Self.touchStatus(label: statusLabel, text: "读剪贴板文件失败")
                 return
             }
@@ -154,6 +175,7 @@ final class KeyboardSyncCoordinator {
             do {
                 let data = try Data(contentsOf: copied.url)
                 if data.count > config.maxFileBytes {
+                    AppGroupStore.appendKeyboardLog("kbsync push file skip: \(data.count) > 上限 \(config.maxFileBytes)")
                     await Self.touchStatus(label: statusLabel, text: "文件超限未推")
                     return
                 }
@@ -163,11 +185,16 @@ final class KeyboardSyncCoordinator {
                 state.lastPushedDigest = digest
                 state.lastPushedAt = Date()
                 saveState(state)
+                AppGroupStore.appendKeyboardLog("kbsync push file ok \(data.count)B \(name) via=\(copied.via)")
                 await Self.touchStatus(label: statusLabel, text: "已推送文件 \(name)")
             } catch {
+                AppGroupStore.appendKeyboardLog("kbsync push file FAIL \(error)")
                 await Self.touchStatus(label: statusLabel, text: "推送文件失败")
             }
+            return
         }
+
+        AppGroupStore.appendKeyboardLog("kbsync push: 剪贴板里没有图片/文件（img=\(SCPasteboard.hasImage) file=\(SCPasteboard.hasFileURL)）")
     }
 
     // MARK: - 拉方向
@@ -183,6 +210,7 @@ final class KeyboardSyncCoordinator {
         do {
             remote = try await client.fetchProfile()
         } catch {
+            AppGroupStore.appendKeyboardLog("kbsync pull FAIL fetchProfile: \(error)")
             return
         }
 
@@ -190,15 +218,18 @@ final class KeyboardSyncCoordinator {
         // （文本同步留给用户点"最新"按钮主动取，避免键盘一弹就把
         //   用户刚复制的文本顶掉。）
         if remote.type == .text && !remote.hasData {
+            AppGroupStore.appendKeyboardLog("kbsync pull skip: 远端是文本，键盘不覆盖剪贴板")
             return
         }
         // 图片/文件但没数据：坏数据，跳过
         if remote.type != .text && !remote.hasData {
+            AppGroupStore.appendKeyboardLog("kbsync pull skip: 远端 \(remote.type.rawValue) 无数据")
             return
         }
 
         let remoteFingerprint = remote.normalizedHash
         if remoteFingerprint == (state.lastPulledRemoteHash ?? "") {
+            AppGroupStore.appendKeyboardLog("kbsync pull skip: 远端没变")
             return  // 远端没变，别顶用户剪贴板
         }
 
@@ -221,6 +252,7 @@ final class KeyboardSyncCoordinator {
                     .appendingPathComponent(name)
                 try data.write(to: tmp, options: .atomic)
                 if !SCPasteboard.writeFileReference(tmp) {
+                    AppGroupStore.appendKeyboardLog("kbsync pull FAIL 写 file-url 被拒 \(name)")
                     await Self.touchStatus(label: statusLabel, text: "拉取文件写剪贴板失败")
                     return
                 }
@@ -230,8 +262,10 @@ final class KeyboardSyncCoordinator {
             state.lastPulledAt = Date()
             saveState(state)
             let kind = remote.type == .image ? "图片" : "文件"
+            AppGroupStore.appendKeyboardLog("kbsync pull ok \(kind) \(data.count)B")
             await Self.touchStatus(label: statusLabel, text: "已拉取最新\(kind)")
         } catch {
+            AppGroupStore.appendKeyboardLog("kbsync pull FAIL \(error)")
             await Self.touchStatus(label: statusLabel, text: "拉取远端失败")
         }
     }
