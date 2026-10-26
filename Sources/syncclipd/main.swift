@@ -400,7 +400,8 @@ case "dump":
 
         let engine = try? SCSyncEngine(config: cfg)
         print("--- 引擎状态 ---")
-        print("lastLocalHash : \(engine?.state.lastLocalHash ?? "(nil)")")
+        print("lastLocalDigest: \(engine?.state.lastLocalDigest ?? "(nil)")")
+        print("lastLocalKind  : \(engine?.state.lastLocalKind ?? .none)")
         print("lastRemoteHash: \(engine?.state.lastRemoteHash ?? "")")
         print("primed        : \(engine?.state.primed ?? false)")
         exit(0)
