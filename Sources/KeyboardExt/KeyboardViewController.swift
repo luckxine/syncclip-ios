@@ -29,9 +29,18 @@ final class KeyboardViewController: UIInputViewController {
     private var appearedAt: Date?
     private let heartbeatInterval: TimeInterval = 30
 
+    /// 唤起即同步协调器。键盘每次弹出都静默跑一轮双向同步
+    /// （拉远端图片/文件→写剪贴板 / 读剪贴板新图片/文件→推服务器）。
+    /// 这是实现「像微信输入法那样」三端同步的核心，见 KeyboardSyncCoordinator 文档。
+    /// statusLabel 在 viewDidLoad 后才绑（属性初始化顺序不保证它此时尚未创建）。
+    private let syncCoordinator = KeyboardSyncCoordinator()
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemGray6
+
+        // 协调器的状态条引用在这时绑：statusLabel 已创建完毕，下面配样式不影响它
+        syncCoordinator.statusLabel = statusLabel
 
         statusLabel.font = .preferredFont(forTextStyle: .footnote)
         statusLabel.textColor = .secondaryLabel
@@ -74,6 +83,8 @@ final class KeyboardViewController: UIInputViewController {
         AppGroupStore.appendKeyboardLog("appear hasFullAccess=\(hasFullAccess)")
         startHeartbeat()
         rebuildList()
+        // 唤起即同步：已开完全访问才跑，静默一轮双向同步
+        syncCoordinator.syncOnAppear(hasFullAccess: hasFullAccess)
     }
 
     override func viewWillDisappear(_ animated: Bool) {
