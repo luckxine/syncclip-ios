@@ -23,7 +23,9 @@ import SyncClipApp
 /// 跨会话记在 App Group，避免上一轮刚推完的内容这一轮又推一次。
 final class KeyboardSyncCoordinator {
 
-    private weak var statusLabel: UILabel?
+    /// 状态条引用。由 KeyboardViewController 在 viewDidLoad 里绑（那时 statusLabel 已创建）。
+    /// 不能是 `private`：跨文件赋值需要 internal 可见性。
+    weak var statusLabel: UILabel?
 
     /// 跨会话去重状态，落在 App Group（与主 App 共享），文件名同引擎语义。
     /// 没拿到容器就降级成纯内存（不跨会话去重，但同一会话内仍去重）。
@@ -205,11 +207,25 @@ final class KeyboardSyncCoordinator {
             let data = try await client.getFile(
                 dataName: dataName,
                 expectedTransferDataHash: remote.transferDataHash)
-            // 写原始字节（不走 UIImage，动图保帧、字节不漂移）
-            let uti = (remote.type == .image)
-                ? (SCImageCodec.sniff(data)?.uti ?? UTType.data.identifier)
-                : UTType.data.identifier
-            UIPasteboard.general.setData(data, forPasteboardType: uti)
+
+            if remote.type == .image {
+                // 图片写原始字节（不走 UIImage，动图保帧、字节不漂移）
+                let uti = SCImageCodec.sniff(data)?.uti ?? UTType.data.identifier
+                UIPasteboard.general.setData(data, forPasteboardType: uti)
+            } else {
+                // 文件：落成临时文件再写 file-url 引用。
+                // 直接 setData(UTType.data) 粘出来只是一坨裸字节，不是文件 ——
+                // 写 file-url 才能让用户粘进文件 App / 微信 / 任意支持文件的输入框。
+                let name = remote.text.isEmpty ? dataName : remote.text
+                let tmp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(name)
+                try data.write(to: tmp, options: .atomic)
+                if !SCPasteboard.writeFileReference(tmp) {
+                    await Self.touchStatus(label: statusLabel, text: "拉取文件写剪贴板失败")
+                    return
+                }
+            }
+
             state.lastPulledRemoteHash = remoteFingerprint
             state.lastPulledAt = Date()
             saveState(state)
