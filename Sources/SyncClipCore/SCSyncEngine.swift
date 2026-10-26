@@ -756,6 +756,49 @@ public final class SCSyncEngine {
         return await applyRemoteProfile(remote)
     }
 
+    // MARK: - 收件箱拉取（M2/M3 入口 C：不动剪贴板，直接落收件箱）
+
+    /// 把远端的文件/文件组拉进收件箱（不动剪贴板）。
+    /// 远端是文本/图片时拒绝 —— 这条路只服务文件场景，避免和剪贴板路径打架。
+    @discardableResult
+    public func pullIntoInbox() async -> Stats {
+        let remote: SCProfile
+        do {
+            remote = try await client.fetchProfile()
+        } catch {
+            return Stats(action: .failed, note: "拉取远端失败：\(error)")
+        }
+        guard remote.type == .file || remote.type == .group else {
+            return Stats(action: .skipped,
+                         note: "远端不是文件（现在是 \(remote.type)），拉取到收件箱只服务文件")
+        }
+        guard let dataName = remote.dataName, remote.hasData else {
+            return Stats(action: .skipped, note: "远端 profile 缺附件，已拦截")
+        }
+        let mb = Double(remote.size ?? 0) / 1_048_576
+        if mb > Double(config.maxFileBytes) / 1_048_576 {
+            let limit = Self.megabytes(config.maxFileBytes)
+            return Stats(action: .skipped,
+                         note: "远端 \(String(format: "%.1f", mb)) MB 超过上限 \(limit)，未拉取")
+        }
+        do {
+            let data = try await client.getFile(dataName: dataName,
+                                                expectedTransferDataHash: remote.transferDataHash)
+            if remote.type == .group {
+                let dir = try SCInbox.shared.extractGroup(zipData: data, zipName: dataName)
+                SCLog.info("拉取 Group 进收件箱：\(dataName) → \(dir.lastPathComponent)/")
+                return Stats(action: .pulled, note: "已解包 \(dataName) 进收件箱")
+            } else {
+                let url = try SCInbox.shared.save(data: data, name: dataName)
+                SCLog.info("拉取文件进收件箱：\(dataName)")
+                return Stats(action: .pulled, note: "已存 \(url.lastPathComponent) 进收件箱")
+            }
+        } catch {
+            SCLog.error("拉取到收件箱失败：\(error)")
+            return Stats(action: .failed, note: "拉取失败：\(error)")
+        }
+    }
+
     // MARK: - 文件 / Group 手动推送（M2/M3 入口 B：App 内多选 picker）
 
     /// 把用户选中的文件推上去。单文件走 File 直传；多文件打成一个 zip 按
