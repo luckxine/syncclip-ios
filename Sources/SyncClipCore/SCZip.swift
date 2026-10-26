@@ -406,8 +406,13 @@ public enum SCZip {
         cal.timeZone = .current
         let c = cal.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
         let year = max(1980, c.year ?? 1980)   // DOS 日期从 1980 起算
-        let d = UInt16(((year - 1980) << 9) | ((c.month ?? 1) << 5) | (c.day ?? 1))
-        let t = UInt16(((c.hour ?? 0) << 11) | ((c.minute ?? 0) << 5) | ((c.second ?? 0) / 2))
+        let month: UInt16 = UInt16(c.month ?? 1)
+        let day: UInt16 = UInt16(c.day ?? 1)
+        let d: UInt16 = (UInt16(year - 1980) << 9) | (month << 5) | day
+        let hour: UInt16 = UInt16(c.hour ?? 0)
+        let minute: UInt16 = UInt16(c.minute ?? 0)
+        let second: UInt16 = UInt16((c.second ?? 0) / 2)
+        let t: UInt16 = (hour << 11) | (minute << 5) | second
         return (t, d)
     }
 

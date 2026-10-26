@@ -203,7 +203,7 @@ public enum SCPasteboard {
 
     /// NSFileCoordinator 协调读：把别人域里的文件按规矩借出来拷一份。
     private static func coordinatedCopy(of url: URL, timeout: TimeInterval, via: String) async -> CopiedFile? {
-        await withCheckedContinuation { cont in
+        await withCheckedContinuation { (cont: CheckedContinuation<CopiedFile?, Never>) in
             var coordinationError: NSError?
             let coordinator = NSFileCoordinator()
             var resumed = false

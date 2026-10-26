@@ -84,7 +84,7 @@ public final class SCInbox {
     /// 覆盖），Group 目录从不是引用目标。
     public func extractGroup(zipData: Data, zipName rawName: String) throws -> URL {
         let base = Self.sanitized(rawName)
-        var stem = base.deletingPathExtension()
+        var stem = (base as NSString).deletingPathExtension
         if stem.isEmpty { stem = "Group" }
         let target = directory.appendingPathComponent(stem, isDirectory: true)
 
